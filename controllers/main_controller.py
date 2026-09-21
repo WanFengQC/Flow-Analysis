@@ -133,6 +133,8 @@ class MainController(QObject):
         self.api_service = ApiService(cookie)
 
         # Cookie 和 API Client 都准备完成
+        self.window.set_cookie_status("正常")
+        self.window.set_api_status("就绪")
         self.window.set_status("初始化完成")
 
     @Slot(str)
@@ -141,6 +143,10 @@ class MainController(QObject):
 
         # 获取失败时，不保留无效 Cookie
         self.cookie = None
+
+        # 明确保留永久状态栏中的失败状态，避免仅临时消息消失后无从判断。
+        self.window.set_cookie_status("获取失败")
+        self.window.set_api_status("未初始化")
 
         # 把具体错误显示到界面
         self.window.set_status(

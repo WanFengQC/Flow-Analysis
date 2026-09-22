@@ -1,5 +1,8 @@
-from PySide6.QtCore import QObject, QThread, Slot
+from concurrent.futures import Future
 
+from PySide6.QtCore import QObject, QThread, Signal, Slot
+
+from infrastructure.application_runtime import ApplicationRuntime
 from services.api_service import ApiService
 from workers.cookie_worker import CookieWorker
 
@@ -9,42 +12,148 @@ class MainController(QObject):
     Flow Analysis 主控制器。
 
     主要负责：
-    1. 协调主窗口和后台任务
-    2. 启动 Cookie 获取任务
-    3. 接收 Cookie 获取结果
-    4. 创建和维护 ApiService
+    1. 协调主窗口和后台任务；
+    2. 启动 PostgreSQL 基础设施；
+    3. 启动 Cookie 获取任务；
+    4. 接收各后台任务结果；
+    5. 创建和维护 ApiService。
     """
 
-    def __init__(self, window):
+    # PostgreSQL 初始化成功。
+    #
+    # ApplicationRuntime 的 Future 回调不一定运行在 Qt 主线程，
+    # 因此通过 Qt Signal 将结果安全传回主线程。
+    database_ready = Signal()
+
+    # PostgreSQL 初始化失败，并携带错误信息。
+    database_failed = Signal(str)
+
+    def __init__(
+        self,
+        window,
+        runtime: ApplicationRuntime,
+    ):
         super().__init__()
 
-        # 保存主窗口对象
-        # Controller 后面通过它更新界面状态
+        # 保存主窗口 View。
         self.window = window
 
-        # 当前正在使用的 Cookie
-        # 程序刚启动时还没有 Cookie，所以初始值为 None
+        # 保存应用基础设施运行时。
+        # PostgreSQL 异步连接池由该对象统一管理。
+        self.runtime = runtime
+
+        # 当前正在使用的 Cookie。
         self.cookie = None
 
-        # 业务 API 服务
-        # Cookie 获取成功后才会创建
+        # Cookie 成功后创建的业务 API 服务。
         self.api_service = None
 
-        # Cookie 获取任务所使用的后台线程
+        # Cookie 获取任务对应的 Qt 后台线程。
         self.cookie_thread = None
 
-        # 真正负责执行 Cookie 获取逻辑的 Worker
+        # 真正执行 Cookie 获取工作的 Worker。
         self.cookie_worker = None
+
+        # 记录两个核心初始化模块是否已经准备完成。
+        #
+        # 只有数据库和业务 API 都成功以后，
+        # 才认为整个程序初始化完成。
+        self._database_ready = False
+        self._api_ready = False
+
+        # 数据库后台任务完成后，通过 Signal 回到 Qt 主线程。
+        self.database_ready.connect(
+            self._on_database_ready
+        )
+
+        self.database_failed.connect(
+            self._on_database_failed
+        )
 
     def start(self):
         """
-        启动 Flow Analysis 的初始化流程。
+        启动 Flow Analysis 初始化流程。
 
-        当前程序启动后第一件事：
-        自动获取一个可用 Cookie。
+        PostgreSQL 和 Cookie 相互独立，
+        因此同时启动，不需要串行等待。
         """
 
+        # 启动 PostgreSQL 异步基础设施。
+        self._start_database()
+
+        # 启动 Cookie 获取任务。
         self._start_cookie_task()
+
+    def _start_database(self):
+        """启动 PostgreSQL 数据库基础设施。"""
+
+        # 立即更新永久状态栏。
+        self.window.set_database_status("连接中")
+
+        try:
+            # ApplicationRuntime.start() 不会等待 PostgreSQL 完成，
+            # 而是返回一个 Future。
+            future = self.runtime.start()
+
+            # PostgreSQL 初始化真正完成后，
+            # 再进入结果处理函数。
+            future.add_done_callback(
+                self._on_database_future_done
+            )
+
+        except Exception as exc:
+            # 这里主要处理 Runtime 自身连启动任务都无法提交的情况。
+            self.database_failed.emit(str(exc))
+
+    def _on_database_future_done(
+        self,
+        future: Future,
+    ):
+        """
+        PostgreSQL 初始化 Future 完成后的回调。
+
+        此函数可能运行在 asyncio 后台线程，
+        所以禁止在这里直接操作 QWidget。
+        """
+
+        try:
+            # add_done_callback() 只会在 Future 已完成后执行，
+            # 因此这里 result() 不会再等待数据库。
+            future.result()
+
+        except Exception as exc:
+            self.database_failed.emit(str(exc))
+            return
+
+        self.database_ready.emit()
+
+    @Slot()
+    def _on_database_ready(self):
+        """处理 PostgreSQL 初始化成功。"""
+
+        self._database_ready = True
+
+        self.window.set_database_status("正常")
+
+        # 检查整个程序是否已经完成初始化。
+        self._update_initialization_status()
+
+    @Slot(str)
+    def _on_database_failed(
+        self,
+        message: str,
+    ):
+        """处理 PostgreSQL 初始化失败。"""
+
+        self._database_ready = False
+
+        self.window.set_database_status(
+            "连接失败"
+        )
+
+        self.window.set_status(
+            f"PostgreSQL 连接失败：{message}"
+        )
 
     def _start_cookie_task(self):
         """在后台线程中启动 Cookie 获取任务。"""
@@ -54,110 +163,130 @@ class MainController(QObject):
         if self.cookie_thread is not None:
             return
 
-        # 告诉用户当前正在执行什么任务
-        self.window.set_status("正在获取 Cookie...")
+        # 告诉用户当前正在执行什么任务。
+        self.window.set_status(
+            "正在获取 Cookie..."
+        )
 
-        # 创建一个新的后台线程
+        # 创建新的 Qt 后台线程。
         self.cookie_thread = QThread()
 
-        # 创建 Cookie Worker
+        # 创建 Cookie Worker。
         self.cookie_worker = CookieWorker()
 
-        # 将 Worker 移动到后台线程
-        # 之后 Worker 的 run() 会在这个线程中执行
+        # 将 Worker 移到后台线程。
         self.cookie_worker.moveToThread(
             self.cookie_thread
         )
 
-        # -------------------------
-        # 连接线程和 Worker 的信号
-        # -------------------------
-
-        # 后台线程启动后，执行 Worker.run()
+        # QThread 启动后执行 Worker.run()。
         self.cookie_thread.started.connect(
             self.cookie_worker.run
         )
 
-        # Cookie 获取成功后，
-        # 执行 Controller 的 _on_cookie_ready()
+        # Cookie 获取成功。
         self.cookie_worker.cookie_ready.connect(
             self._on_cookie_ready
         )
 
-        # Cookie 获取失败后，
-        # 执行 Controller 的 _on_cookie_error()
+        # Cookie 获取失败。
         self.cookie_worker.error.connect(
             self._on_cookie_error
         )
 
-        # Worker 工作结束后，
-        # 告诉线程退出
+        # Worker 完成后退出线程。
         self.cookie_worker.finished.connect(
             self.cookie_thread.quit
         )
 
-        # Worker 工作完成后，
-        # 让 Qt 在合适的时机清理 Worker
+        # 安排 Qt 清理 Worker。
         self.cookie_worker.finished.connect(
             self.cookie_worker.deleteLater
         )
 
-        # 线程真正结束后，
-        # 让 Qt 清理 QThread 对象
+        # 安排 Qt 清理 QThread。
         self.cookie_thread.finished.connect(
             self.cookie_thread.deleteLater
         )
 
-        # 线程结束后，
-        # 清空 Controller 中保存的引用
+        # 清除 Controller 中保存的 Python 引用。
         self.cookie_thread.finished.connect(
             self._on_cookie_thread_finished
         )
 
-        # 正式启动后台线程
+        # 正式启动线程。
         self.cookie_thread.start()
 
     @Slot(object)
-    def _on_cookie_ready(self, cookie):
+    def _on_cookie_ready(
+        self,
+        cookie,
+    ):
         """处理 Cookie 获取成功。"""
 
-        # 保存当前可用 Cookie
+        # 保存当前可用 Cookie。
         self.cookie = cookie
 
-        # 如果之前已经存在 ApiService，
-        # 先关闭旧的 HTTP Client。
+        # 如果已经存在旧的 ApiService，
+        # 创建新客户端前先释放旧 HTTP Client。
         if self.api_service is not None:
             self.api_service.close()
 
-        # 使用最新 Cookie 创建业务 API 服务
+        # 使用最新 Cookie 创建业务 API 服务。
         self.api_service = ApiService(cookie)
 
-        # Cookie 和 API Client 都准备完成
+        # API 初始化成功。
+        self._api_ready = True
+
         self.window.set_cookie_status("正常")
         self.window.set_api_status("就绪")
-        self.window.set_status("初始化完成")
+
+        # 不直接显示“初始化完成”，
+        # 因为此时 PostgreSQL 可能仍然正在连接。
+        self._update_initialization_status()
 
     @Slot(str)
-    def _on_cookie_error(self, message):
+    def _on_cookie_error(
+        self,
+        message,
+    ):
         """处理 Cookie 获取失败。"""
 
-        # 获取失败时，不保留无效 Cookie
+        # 获取失败时不保存无效 Cookie。
         self.cookie = None
+        self._api_ready = False
 
-        # 明确保留永久状态栏中的失败状态，避免仅临时消息消失后无从判断。
-        self.window.set_cookie_status("获取失败")
-        self.window.set_api_status("未初始化")
+        self.window.set_cookie_status(
+            "获取失败"
+        )
 
-        # 把具体错误显示到界面
+        self.window.set_api_status(
+            "未初始化"
+        )
+
         self.window.set_status(
             f"Cookie 获取失败：{message}"
         )
+
+    def _update_initialization_status(self):
+        """
+        根据各基础模块状态决定是否完成初始化。
+
+        防止 Cookie 初始化完成时数据库仍未完成，
+        却错误显示“初始化完成”。
+        """
+
+        if (
+            self._database_ready
+            and self._api_ready
+        ):
+            self.window.set_status(
+                "初始化完成"
+            )
 
     @Slot()
     def _on_cookie_thread_finished(self):
         """Cookie 后台线程结束后的清理工作。"""
 
-        # Qt 对象已经通过 deleteLater() 安排清理，
-        # 这里再清除 Python 中保存的引用。
         self.cookie_worker = None
         self.cookie_thread = None

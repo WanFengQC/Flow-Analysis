@@ -1,9 +1,29 @@
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from psycopg import AsyncConnection
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
+
+import psycopg
+from psycopg import AsyncConnection, errors
 from psycopg.rows import dict_row
-from psycopg_pool import AsyncConnectionPool
+from psycopg_pool import (
+    AsyncConnectionPool,
+    PoolClosed,
+    PoolTimeout,
+    TooManyRequests,
+)
+
+from config.database_settings import DatabaseSettings
+from repositories.exceptions import (
+    DatabaseAuthenticationError,
+    DatabaseConnectionError,
+    DatabasePoolBusyError,
+    DatabasePoolTimeoutError,
+    DatabaseQueryError,
+    DatabaseQueryTimeoutError,
+    DatabaseUnavailableError,
+)
 
 from config.database_settings import DatabaseSettings
 
@@ -110,20 +130,97 @@ class DatabaseManager:
 
     @asynccontextmanager
     async def connection(
-        self,
+            self,
     ) -> AsyncIterator[AsyncConnection]:
         """
-        从连接池中获取一个数据库连接。
+        从连接池安全获取一个 PostgreSQL 连接。
 
-        使用完成后自动把连接归还给连接池。
+        此处同时作为数据库异常边界：
+        将 psycopg / psycopg_pool 的底层异常，
+        转换为 Flow Analysis 自己的数据库异常。
         """
 
         pool = self._require_pool()
 
-        async with pool.connection(
-            timeout=self._settings.pool_timeout,
-        ) as connection:
-            yield connection
+        try:
+            async with pool.connection(
+                    timeout=self._settings.pool_timeout,
+            ) as connection:
+                # Repository 会在 yield 后使用该连接执行 SQL。
+                #
+                # 如果 Repository 内部执行 SQL 时发生异常，
+                # 异常同样会重新回到当前 try 中，
+                # 因此可以在这里统一转换。
+                yield connection
+
+        except TooManyRequests as exc:
+            # 等待连接的任务已经达到 max_waiting，
+            # 为防止请求无限堆积，连接池主动拒绝新请求。
+            raise DatabasePoolBusyError(
+                "数据库请求过多，连接池等待队列已满"
+            ) from exc
+
+        except PoolTimeout as exc:
+            # 已经等待了一段时间，
+            # 但仍然没有获得可用连接。
+            raise DatabasePoolTimeoutError(
+                "等待数据库连接超时"
+            ) from exc
+
+        except PoolClosed as exc:
+            # 正常运行过程中不应该出现。
+            # 通常意味着生命周期管理存在问题，
+            # 或程序已经进入关闭阶段。
+            raise DatabaseUnavailableError(
+                "数据库连接池已经关闭"
+            ) from exc
+
+        except errors.InvalidPassword as exc:
+            # PostgreSQL SQLSTATE 28P01：
+            # 用户名或密码认证失败。
+            raise DatabaseAuthenticationError(
+                "PostgreSQL 用户名或密码错误"
+            ) from exc
+
+        except errors.QueryCanceled as exc:
+            # 当前项目已经配置 statement_timeout，
+            # 因此 SQL 超时会由 PostgreSQL 主动取消查询。
+            #
+            # 目前尚未实现用户主动取消 SQL，
+            # 所以先统一解释为查询超时。
+            raise DatabaseQueryTimeoutError(
+                "SQL 执行超时"
+            ) from exc
+
+        except (
+                errors.ConnectionTimeout,
+                psycopg.InterfaceError,
+        ) as exc:
+            # 建立连接超时，或者客户端连接对象已经不可用。
+            raise DatabaseConnectionError(
+                "PostgreSQL 连接异常"
+            ) from exc
+
+        except psycopg.OperationalError as exc:
+            # OperationalError 范围较广，例如：
+            # - 网络中断
+            # - PostgreSQL 关闭
+            # - 连接突然断开
+            # - 资源不足
+            #
+            # 更具体的异常已经在上面优先处理。
+            raise DatabaseUnavailableError(
+                "PostgreSQL 当前不可用"
+            ) from exc
+
+        except psycopg.DatabaseError as exc:
+            # 兜底处理其它 PostgreSQL 数据库异常。
+            #
+            # ProgrammingError、IntegrityError 等后续随着
+            # Repository 业务逐步细分。
+            raise DatabaseQueryError(
+                "数据库操作执行失败"
+            ) from exc
 
     async def health_check(self) -> bool:
         """

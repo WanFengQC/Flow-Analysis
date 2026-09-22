@@ -15,8 +15,8 @@ class DatabaseSettings:
     # PostgreSQL 服务端口。
     port: int = 5432
 
-    # 数据库名称。
-    database: str = "hunter"
+    # Flow Analysis 独立使用的新 PostgreSQL 数据库；业务表后续按正式 Schema 建立。
+    database: str = "flow_analysis"
 
     # 数据库用户名。
     user: str = "postgres"

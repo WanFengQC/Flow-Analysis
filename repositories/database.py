@@ -1,9 +1,6 @@
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from contextlib import asynccontextmanager
-from typing import AsyncIterator
-
 import psycopg
 from psycopg import AsyncConnection, errors
 from psycopg.rows import dict_row
@@ -24,9 +21,6 @@ from repositories.exceptions import (
     DatabaseQueryTimeoutError,
     DatabaseUnavailableError,
 )
-
-from config.database_settings import DatabaseSettings
-
 
 class DatabaseManager:
     """负责 PostgreSQL 异步连接池的生命周期管理。"""
@@ -221,6 +215,26 @@ class DatabaseManager:
             raise DatabaseQueryError(
                 "数据库操作执行失败"
             ) from exc
+
+    @asynccontextmanager
+    async def transaction(
+            self,
+    ) -> AsyncIterator[AsyncConnection]:
+        """
+        在同一个 PostgreSQL 连接中执行由 Service 划定边界的事务。
+
+        Repository 只能使用 yield 出去的 connection 执行 SQL，
+        不自行决定提交或回滚。正常退出时自动提交；任何异常
+        （包括任务取消）都会先回滚，再将原始异常交给上层处理。
+        """
+
+        # connection() 内部使用 psycopg_pool 的连接上下文：
+        # 正常退出时由 psycopg 自动 COMMIT，异常退出时自动 ROLLBACK。
+        # 复用它可避免手动提交后连接池退出阶段再次提交，并继续保留
+        # 现有连接池、异常转换和生命周期逻辑。
+        async with self.connection() as connection:
+            # 同一个 connection 会被 Service 传递给多个 Repository。
+            yield connection
 
     async def health_check(self) -> bool:
         """

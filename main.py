@@ -58,9 +58,10 @@ def main() -> int:
     # asyncio EventLoop
     #
     # 不能反过来。
-    app.aboutToQuit.connect(
-        runtime.shutdown
-    )
+    # 先停止 Controller 管理的 SellerSprite 查询与 API Client，
+    # 再关闭 ApplicationRuntime 管理的图片客户端、数据库和 EventLoop。
+    app.aboutToQuit.connect(controller.shutdown)
+    app.aboutToQuit.connect(runtime.shutdown)
 
     # 启动 Qt 主事件循环。
     return app.exec()

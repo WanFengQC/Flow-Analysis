@@ -16,11 +16,12 @@ from PySide6.QtGui import (QAction, QBrush, QColor, QConicalGradient,
     QIcon, QImage, QKeySequence, QLinearGradient,
     QPainter, QPalette, QPixmap, QRadialGradient,
     QTransform)
-from PySide6.QtWidgets import (QApplication, QComboBox, QFrame, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QMainWindow,
-    QMenu, QMenuBar, QPushButton, QSizePolicy,
-    QSpacerItem, QSplitter, QStatusBar, QTabWidget,
-    QTableView, QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QComboBox, QFrame, QGridLayout,
+    QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QMainWindow, QMenu, QMenuBar, QPushButton,
+    QScrollArea, QSizePolicy, QSpacerItem, QSplitter,
+    QStackedWidget, QStatusBar, QTabWidget, QTableView,
+    QToolButton, QVBoxLayout, QWidget)
 
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
@@ -166,7 +167,7 @@ class Ui_MainWindow(object):
 
         self.taskHeaderLayout.addItem(self.taskHeaderHorizontalSpacer)
 
-        self.refreshButton = QToolButton(self.taskHeader)
+        self.refreshButton = QPushButton(self.taskHeader)
         self.refreshButton.setObjectName(u"refreshButton")
 
         self.taskHeaderLayout.addWidget(self.refreshButton)
@@ -184,21 +185,123 @@ class Ui_MainWindow(object):
         self.resultTabWidget.setObjectName(u"resultTabWidget")
         self.resultTab = QWidget()
         self.resultTab.setObjectName(u"resultTab")
-        self.overviewLayout = QVBoxLayout(self.resultTab)
-        self.overviewLayout.setObjectName(u"overviewLayout")
-        self.overviewTopSpacer = QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
+        self.resultTabLayout = QVBoxLayout(self.resultTab)
+        self.resultTabLayout.setObjectName(u"resultTabLayout")
+        self.resultTabLayout.setContentsMargins(0, 0, 0, 0)
+        self.relationResultStackedWidget = QStackedWidget(self.resultTab)
+        self.relationResultStackedWidget.setObjectName(u"relationResultStackedWidget")
+        self.emptyPage = QWidget()
+        self.emptyPage.setObjectName(u"emptyPage")
+        self.emptyPageLayout = QVBoxLayout(self.emptyPage)
+        self.emptyPageLayout.setObjectName(u"emptyPageLayout")
+        self.emptyPageTopSpacer = QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
 
-        self.overviewLayout.addItem(self.overviewTopSpacer)
+        self.emptyPageLayout.addItem(self.emptyPageTopSpacer)
 
-        self.resultPlaceholderLabel = QLabel(self.resultTab)
-        self.resultPlaceholderLabel.setObjectName(u"resultPlaceholderLabel")
-        self.resultPlaceholderLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.relationEmptyTitleLabel = QLabel(self.emptyPage)
+        self.relationEmptyTitleLabel.setObjectName(u"relationEmptyTitleLabel")
+        self.relationEmptyTitleLabel.setFont(font)
+        self.relationEmptyTitleLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self.overviewLayout.addWidget(self.resultPlaceholderLabel)
+        self.emptyPageLayout.addWidget(self.relationEmptyTitleLabel)
 
-        self.overviewBottomSpacer = QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
+        self.relationEmptyHintLabel = QLabel(self.emptyPage)
+        self.relationEmptyHintLabel.setObjectName(u"relationEmptyHintLabel")
+        self.relationEmptyHintLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self.overviewLayout.addItem(self.overviewBottomSpacer)
+        self.emptyPageLayout.addWidget(self.relationEmptyHintLabel)
+
+        self.emptyPageBottomSpacer = QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
+
+        self.emptyPageLayout.addItem(self.emptyPageBottomSpacer)
+
+        self.relationResultStackedWidget.addWidget(self.emptyPage)
+        self.loadingPage = QWidget()
+        self.loadingPage.setObjectName(u"loadingPage")
+        self.loadingPageLayout = QVBoxLayout(self.loadingPage)
+        self.loadingPageLayout.setObjectName(u"loadingPageLayout")
+        self.loadingPageTopSpacer = QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
+
+        self.loadingPageLayout.addItem(self.loadingPageTopSpacer)
+
+        self.relationLoadingLabel = QLabel(self.loadingPage)
+        self.relationLoadingLabel.setObjectName(u"relationLoadingLabel")
+        self.relationLoadingLabel.setFont(font)
+        self.relationLoadingLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.loadingPageLayout.addWidget(self.relationLoadingLabel)
+
+        self.loadingPageBottomSpacer = QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
+
+        self.loadingPageLayout.addItem(self.loadingPageBottomSpacer)
+
+        self.relationResultStackedWidget.addWidget(self.loadingPage)
+        self.resultPage = QWidget()
+        self.resultPage.setObjectName(u"resultPage")
+        self.resultPageLayout = QVBoxLayout(self.resultPage)
+        self.resultPageLayout.setObjectName(u"resultPageLayout")
+        self.resultPageLayout.setContentsMargins(0, 0, 0, 0)
+        self.relationResultToolbar = QWidget(self.resultPage)
+        self.relationResultToolbar.setObjectName(u"relationResultToolbar")
+        self.relationResultToolbarLayout = QHBoxLayout(self.relationResultToolbar)
+        self.relationResultToolbarLayout.setObjectName(u"relationResultToolbarLayout")
+        self.relationResultToolbarLayout.setContentsMargins(12, 8, 12, 4)
+        self.relationVariationFilterArea = QWidget(self.relationResultToolbar)
+        self.relationVariationFilterArea.setObjectName(u"relationVariationFilterArea")
+        self.relationVariationFilterAreaLayout = QHBoxLayout(self.relationVariationFilterArea)
+        self.relationVariationFilterAreaLayout.setObjectName(u"relationVariationFilterAreaLayout")
+        self.relationVariationFilterAreaLayout.setContentsMargins(0, 0, 0, 0)
+        self.relationVariationFiltersLayout = QHBoxLayout()
+        self.relationVariationFiltersLayout.setSpacing(8)
+        self.relationVariationFiltersLayout.setObjectName(u"relationVariationFiltersLayout")
+        self.relationVariationFiltersLayout.setContentsMargins(0, 0, 0, 0)
+
+        self.relationVariationFilterAreaLayout.addLayout(self.relationVariationFiltersLayout)
+
+        self.resetRelationFiltersButton = QToolButton(self.relationVariationFilterArea)
+        self.resetRelationFiltersButton.setObjectName(u"resetRelationFiltersButton")
+
+        self.relationVariationFilterAreaLayout.addWidget(self.resetRelationFiltersButton)
+
+
+        self.relationResultToolbarLayout.addWidget(self.relationVariationFilterArea)
+
+        self.relationResultToolbarSpacer = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+
+        self.relationResultToolbarLayout.addItem(self.relationResultToolbarSpacer)
+
+        self.selectVisibleRelationButton = QToolButton(self.relationResultToolbar)
+        self.selectVisibleRelationButton.setObjectName(u"selectVisibleRelationButton")
+
+        self.relationResultToolbarLayout.addWidget(self.selectVisibleRelationButton)
+
+        self.selectedRelationCountLabel = QLabel(self.relationResultToolbar)
+        self.selectedRelationCountLabel.setObjectName(u"selectedRelationCountLabel")
+
+        self.relationResultToolbarLayout.addWidget(self.selectedRelationCountLabel)
+
+
+        self.resultPageLayout.addWidget(self.relationResultToolbar)
+
+        self.relationResultScrollArea = QScrollArea(self.resultPage)
+        self.relationResultScrollArea.setObjectName(u"relationResultScrollArea")
+        self.relationResultScrollArea.setFrameShape(QFrame.Shape.NoFrame)
+        self.relationResultScrollArea.setWidgetResizable(True)
+        self.relationResultScrollContent = QWidget()
+        self.relationResultScrollContent.setObjectName(u"relationResultScrollContent")
+        self.relationResultScrollContent.setGeometry(QRect(0, 0, 760, 500))
+        self.relationProductGridLayout = QGridLayout(self.relationResultScrollContent)
+        self.relationProductGridLayout.setObjectName(u"relationProductGridLayout")
+        self.relationProductGridLayout.setHorizontalSpacing(12)
+        self.relationProductGridLayout.setVerticalSpacing(12)
+        self.relationProductGridLayout.setContentsMargins(12, 12, 12, 12)
+        self.relationResultScrollArea.setWidget(self.relationResultScrollContent)
+
+        self.resultPageLayout.addWidget(self.relationResultScrollArea)
+
+        self.relationResultStackedWidget.addWidget(self.resultPage)
+
+        self.resultTabLayout.addWidget(self.relationResultStackedWidget)
 
         self.resultTabWidget.addTab(self.resultTab, "")
         self.dataTab = QWidget()
@@ -259,6 +362,7 @@ class Ui_MainWindow(object):
         self.retranslateUi(MainWindow)
 
         self.resultTabWidget.setCurrentIndex(0)
+        self.relationResultStackedWidget.setCurrentIndex(0)
 
 
         QMetaObject.connectSlotsByName(MainWindow)
@@ -286,7 +390,12 @@ class Ui_MainWindow(object):
         self.recordCountLabel.setText(QCoreApplication.translate("MainWindow", u"0 \u6761\u6570\u636e", None))
         self.refreshButton.setText(QCoreApplication.translate("MainWindow", u"\u5237\u65b0", None))
         self.exportButton.setText(QCoreApplication.translate("MainWindow", u"\u5bfc\u51fa Excel", None))
-        self.resultPlaceholderLabel.setText(QCoreApplication.translate("MainWindow", u"\u6682\u65e0\u5206\u6790\u7ed3\u679c", None))
+        self.relationEmptyTitleLabel.setText(QCoreApplication.translate("MainWindow", u"\u6682\u65e0\u5173\u8054 ASIN", None))
+        self.relationEmptyHintLabel.setText(QCoreApplication.translate("MainWindow", u"\u8f93\u5165 ASIN \u540e\u70b9\u51fb\u67e5\u8be2", None))
+        self.relationLoadingLabel.setText(QCoreApplication.translate("MainWindow", u"\u6b63\u5728\u67e5\u8be2\u5173\u8054 ASIN...", None))
+        self.resetRelationFiltersButton.setText(QCoreApplication.translate("MainWindow", u"\u91cd\u7f6e\u7b5b\u9009", None))
+        self.selectVisibleRelationButton.setText(QCoreApplication.translate("MainWindow", u"\u5168\u9009", None))
+        self.selectedRelationCountLabel.setText(QCoreApplication.translate("MainWindow", u"\u5df2\u9009\u62e9 0 / 0", None))
         self.resultTabWidget.setTabText(self.resultTabWidget.indexOf(self.resultTab), QCoreApplication.translate("MainWindow", u"\u7ed3\u679c", None))
         self.tableSearchLineEdit.setPlaceholderText(QCoreApplication.translate("MainWindow", u"\u641c\u7d22 ASIN / \u6807\u9898 / \u5173\u952e\u8bcd", None))
         self.resetFilterButton.setText(QCoreApplication.translate("MainWindow", u"\u91cd\u7f6e", None))

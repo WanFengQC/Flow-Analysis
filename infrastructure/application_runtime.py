@@ -7,6 +7,7 @@ from enum import Enum, auto
 from config.database_settings import DatabaseSettings
 from infrastructure.async_runtime import AsyncRuntime
 from repositories.database import DatabaseManager
+from services.image_service import ImageService
 
 
 class RuntimeState(Enum):
@@ -42,6 +43,10 @@ class ApplicationRuntime:
         self.database = DatabaseManager(
             database_settings
         )
+
+        # 商品图片使用独立、无认证的异步 HTTP Client。
+        # 由应用运行时统一持有并在退出阶段关闭。
+        self.image_service = ImageService()
 
         # 当前基础设施运行状态。
         self._state = RuntimeState.STOPPED
@@ -190,10 +195,10 @@ class ApplicationRuntime:
             self._state = RuntimeState.STOPPING
 
         try:
-            # PostgreSQL 连接池运行在 asyncio EventLoop 中，
+            # PostgreSQL 连接池和图片 HTTP Client 都运行在 asyncio EventLoop 中，
             # 因此必须先通过 AsyncRuntime 提交关闭任务。
             close_future = self.async_runtime.submit(
-                self.database.close()
+                self._shutdown_async_resources()
             )
 
             # 程序已经处于退出阶段，
@@ -212,3 +217,10 @@ class ApplicationRuntime:
 
             with self._state_lock:
                 self._state = RuntimeState.STOPPED
+
+    async def _shutdown_async_resources(self) -> None:
+        """在停止 EventLoop 前关闭全部异步基础设施资源。"""
+
+        # 图片客户端不携带 SellerSprite 认证信息，但同样必须在 EventLoop 中关闭。
+        await self.image_service.aclose()
+        await self.database.close()

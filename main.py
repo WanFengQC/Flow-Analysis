@@ -25,7 +25,7 @@ def main() -> int:
         DATABASE_SETTINGS
     )
 
-    # 创建主窗口。
+    # 创建主窗口。B0DSHYXD4G
     window = MainWindow()
 
     # 创建主控制器，并把 Runtime 注入 Controller。

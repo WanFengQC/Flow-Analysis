@@ -596,7 +596,7 @@
              </item>
             </layout>
           </widget>
-          <widget class="QWidget" name="dataTab">
+           <widget class="QWidget" name="dataTab">
            <attribute name="title">
             <string>数据</string>
            </attribute>
@@ -632,14 +632,387 @@
                 </property>
                </widget>
               </item>
+              <item>
+               <spacer name="analysisResultModeSpacer">
+                <property name="orientation">
+                 <enum>Qt::Orientation::Horizontal</enum>
+                </property>
+                <property name="sizeHint" stdset="0">
+                 <size>
+                  <width>40</width>
+                  <height>20</height>
+                 </size>
+                </property>
+               </spacer>
+              </item>
+              <item>
+               <widget class="QLabel" name="analysisResultModeLabel">
+                <property name="text">
+                 <string>未归一预览</string>
+                </property>
+               </widget>
+              </item>
              </layout>
             </item>
             <item>
              <widget class="QTableView" name="resultTableView"/>
             </item>
-           </layout>
+            </layout>
+           </widget>
+           <widget class="QWidget" name="normalizationReviewTab">
+            <attribute name="title">
+             <string>归一审核</string>
+            </attribute>
+            <layout class="QVBoxLayout" name="normalizationReviewLayout">
+             <property name="leftMargin">
+              <number>8</number>
+             </property>
+             <property name="topMargin">
+              <number>8</number>
+             </property>
+             <property name="rightMargin">
+              <number>8</number>
+             </property>
+             <property name="bottomMargin">
+              <number>8</number>
+             </property>
+             <item>
+              <layout class="QHBoxLayout" name="normalizationToolbarLayout">
+               <property name="spacing">
+                <number>8</number>
+               </property>
+               <item>
+                <widget class="QLineEdit" name="normalizationSearchLineEdit">
+                 <property name="minimumSize">
+                  <size>
+                   <width>220</width>
+                   <height>0</height>
+                  </size>
+                 </property>
+                 <property name="placeholderText">
+                  <string>搜索 canonical 或 variant...</string>
+                 </property>
+                 <property name="clearButtonEnabled">
+                  <bool>true</bool>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QComboBox" name="normalizationReasonComboBox"/>
+               </item>
+               <item>
+               <widget class="QComboBox" name="normalizationDecisionComboBox"/>
+               </item>
+               <item>
+                <widget class="QComboBox" name="normalizationHistoryComboBox"/>
+               </item>
+               <item>
+                <widget class="QComboBox" name="normalizationSortComboBox"/>
+               </item>
+               <item>
+                <spacer name="normalizationToolbarSpacer">
+                 <property name="orientation">
+                  <enum>Qt::Orientation::Horizontal</enum>
+                 </property>
+                 <property name="sizeHint" stdset="0">
+                  <size>
+                   <width>40</width>
+                   <height>20</height>
+                  </size>
+                 </property>
+                </spacer>
+               </item>
+               <item>
+               <widget class="QLabel" name="normalizationProgressLabel">
+                <property name="text">
+                 <string>待审核 0 / 0</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QPushButton" name="applyNormalizationRulesButton">
+                <property name="text">
+                 <string>应用已批准规则并重算</string>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <widget class="QLabel" name="normalizationResultStatusLabel">
+              <property name="text">
+               <string>尚未生成正式结果</string>
+              </property>
+              <property name="wordWrap">
+               <bool>true</bool>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <layout class="QHBoxLayout" name="normalizationPersistenceLayout">
+              <item>
+               <widget class="QLabel" name="normalizationPersistenceStatusLabel">
+                <property name="text">
+                 <string>审核记录已保存</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QToolButton" name="retryNormalizationPersistenceButton">
+                <property name="text">
+                 <string>重试保存</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <spacer name="normalizationPersistenceSpacer">
+                <property name="orientation">
+                 <enum>Qt::Orientation::Horizontal</enum>
+                </property>
+                <property name="sizeHint" stdset="0">
+                 <size>
+                  <width>40</width>
+                  <height>20</height>
+                 </size>
+                </property>
+               </spacer>
+              </item>
+             </layout>
+            </item>
+            <item>
+              <widget class="QSplitter" name="normalizationReviewSplitter">
+               <property name="orientation">
+                <enum>Qt::Orientation::Horizontal</enum>
+               </property>
+               <property name="childrenCollapsible">
+                <bool>false</bool>
+               </property>
+               <widget class="QWidget" name="normalizationListPanel">
+                <property name="minimumSize">
+                 <size>
+                  <width>280</width>
+                  <height>0</height>
+                 </size>
+                </property>
+                <layout class="QVBoxLayout" name="normalizationListPanelLayout">
+                 <property name="leftMargin">
+                  <number>0</number>
+                 </property>
+                 <property name="topMargin">
+                  <number>0</number>
+                 </property>
+                 <property name="rightMargin">
+                  <number>0</number>
+                 </property>
+                 <property name="bottomMargin">
+                  <number>0</number>
+                 </property>
+                 <item>
+                  <widget class="QLabel" name="normalizationReviewEmptyLabel">
+                   <property name="text">
+                    <string>当前分析尚未生成归一审核候选。</string>
+                   </property>
+                   <property name="wordWrap">
+                    <bool>true</bool>
+                   </property>
+                   <property name="alignment">
+                    <set>Qt::AlignmentFlag::AlignCenter</set>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QListView" name="normalizationCandidateListView"/>
+                 </item>
+                </layout>
+               </widget>
+               <widget class="QWidget" name="normalizationDetailPanel">
+                <layout class="QVBoxLayout" name="normalizationDetailPanelLayout">
+                 <property name="leftMargin">
+                  <number>0</number>
+                 </property>
+                 <property name="topMargin">
+                  <number>0</number>
+                 </property>
+                 <property name="rightMargin">
+                  <number>0</number>
+                 </property>
+                 <property name="bottomMargin">
+                  <number>0</number>
+                 </property>
+                 <item>
+                  <widget class="QScrollArea" name="normalizationDetailScrollArea">
+                   <property name="frameShape">
+                    <enum>QFrame::Shape::NoFrame</enum>
+                   </property>
+                   <property name="widgetResizable">
+                    <bool>true</bool>
+                   </property>
+                   <widget class="QWidget" name="normalizationDetailScrollContent">
+                    <property name="geometry">
+                     <rect>
+                      <x>0</x>
+                      <y>0</y>
+                      <width>560</width>
+                      <height>520</height>
+                     </rect>
+                    </property>
+                    <layout class="QVBoxLayout" name="normalizationDetailLayout">
+                     <property name="leftMargin">
+                      <number>8</number>
+                     </property>
+                     <property name="topMargin">
+                      <number>8</number>
+                     </property>
+                     <property name="rightMargin">
+                      <number>8</number>
+                     </property>
+                     <property name="bottomMargin">
+                      <number>8</number>
+                     </property>
+                     <item>
+                      <widget class="QLabel" name="normalizationDetailEmptyLabel">
+                       <property name="text">
+                        <string>从左侧选择一个候选查看审核详情。</string>
+                       </property>
+                       <property name="alignment">
+                        <set>Qt::AlignmentFlag::AlignCenter</set>
+                       </property>
+                      </widget>
+                     </item>
+                     <item>
+                      <widget class="QWidget" name="normalizationDetailContent">
+                       <layout class="QVBoxLayout" name="normalizationDetailContentLayout">
+                        <property name="spacing">
+                         <number>10</number>
+                        </property>
+                        <property name="leftMargin">
+                         <number>0</number>
+                        </property>
+                        <property name="topMargin">
+                         <number>0</number>
+                        </property>
+                        <property name="rightMargin">
+                         <number>0</number>
+                        </property>
+                        <property name="bottomMargin">
+                         <number>0</number>
+                        </property>
+                        <item>
+                         <widget class="QLabel" name="normalizationSuggestedTitleLabel">
+                          <property name="text">
+                           <string>推荐标准词</string>
+                          </property>
+                         </widget>
+                        </item>
+                        <item>
+                         <widget class="QLabel" name="normalizationSuggestedCanonicalLabel">
+                          <property name="text">
+                           <string>-</string>
+                          </property>
+                          <property name="font">
+                           <font>
+                            <pointsize>14</pointsize>
+                            <bold>true</bold>
+                           </font>
+                          </property>
+                         </widget>
+                        </item>
+                        <item>
+                         <widget class="QLineEdit" name="normalizationCanonicalLineEdit">
+                          <property name="placeholderText">
+                           <string>批准时使用的标准词</string>
+                          </property>
+                         </widget>
+                        </item>
+                        <item>
+                         <widget class="QLabel" name="normalizationReasonBadgeLabel">
+                          <property name="text">
+                           <string>-</string>
+                          </property>
+                         </widget>
+                        </item>
+                        <item>
+                         <layout class="QFormLayout" name="normalizationMetricsFormLayout">
+                          <item row="0" column="0">
+                           <widget class="QLabel" name="normalizationConfidenceTitleLabel">
+                            <property name="text"><string>置信度：</string></property>
+                           </widget>
+                          </item>
+                          <item row="0" column="1"><widget class="QLabel" name="normalizationConfidenceValueLabel"><property name="text"><string>-</string></property></widget></item>
+                          <item row="1" column="0"><widget class="QLabel" name="normalizationImpactTitleLabel"><property name="text"><string>影响周曝光：</string></property></widget></item>
+                          <item row="1" column="1"><widget class="QLabel" name="normalizationImpactValueLabel"><property name="text"><string>-</string></property></widget></item>
+                          <item row="2" column="0"><widget class="QLabel" name="normalizationMonthsTitleLabel"><property name="text"><string>出现月份：</string></property></widget></item>
+                          <item row="2" column="1"><widget class="QLabel" name="normalizationMonthsValueLabel"><property name="text"><string>-</string></property></widget></item>
+                          <item row="3" column="0"><widget class="QLabel" name="normalizationFrequencyTitleLabel"><property name="text"><string>总频次：</string></property></widget></item>
+                          <item row="3" column="1"><widget class="QLabel" name="normalizationFrequencyValueLabel"><property name="text"><string>-</string></property></widget></item>
+                          <item row="4" column="0"><widget class="QLabel" name="normalizationMatchingTitleLabel"><property name="text"><string>匹配搜索词：</string></property></widget></item>
+                          <item row="4" column="1"><widget class="QLabel" name="normalizationMatchingValueLabel"><property name="text"><string>-</string></property></widget></item>
+                         </layout>
+                        </item>
+                        <item>
+                         <widget class="QLabel" name="normalizationVariantsTitleLabel"><property name="text"><string>Variant 独立证据</string></property></widget>
+                        </item>
+                        <item>
+                         <widget class="QWidget" name="normalizationVariantDetailsContainer">
+                          <layout class="QVBoxLayout" name="normalizationVariantDetailsLayout">
+                           <property name="leftMargin"><number>0</number></property>
+                           <property name="topMargin"><number>0</number></property>
+                           <property name="rightMargin"><number>0</number></property>
+                           <property name="bottomMargin"><number>0</number></property>
+                          </layout>
+                         </widget>
+                        </item>
+                        <item>
+                         <widget class="QLabel" name="normalizationConflictsTitleLabel"><property name="text"><string>跨组冲突</string></property></widget>
+                        </item>
+                        <item>
+                         <widget class="QWidget" name="normalizationConflictContainer">
+                          <layout class="QVBoxLayout" name="normalizationConflictLayout">
+                           <property name="leftMargin"><number>0</number></property>
+                           <property name="topMargin"><number>0</number></property>
+                           <property name="rightMargin"><number>0</number></property>
+                           <property name="bottomMargin"><number>0</number></property>
+                          </layout>
+                         </widget>
+                        </item>
+                        <item>
+                         <widget class="QLabel" name="normalizationHistoryTitleLabel"><property name="text"><string>历史审核参考</string></property></widget>
+                        </item>
+                        <item>
+                         <widget class="QLabel" name="normalizationHistorySummaryLabel">
+                          <property name="text"><string>历史审核记录加载中...</string></property>
+                          <property name="wordWrap"><bool>true</bool></property>
+                         </widget>
+                        </item>
+                        <item>
+                         <layout class="QHBoxLayout" name="normalizationHistoryActionLayout">
+                          <item><widget class="QPushButton" name="useHistoryCanonicalButton"><property name="text"><string>使用历史标准词</string></property></widget></item>
+                          <item><widget class="QPushButton" name="viewNormalizationHistoryButton"><property name="text"><string>查看历史详情</string></property></widget></item>
+                          <item><spacer name="normalizationHistoryActionSpacer"><property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+                         </layout>
+                        </item>
+                       </layout>
+                      </widget>
+                     </item>
+                    </layout>
+                   </widget>
+                  </widget>
+                 </item>
+                 <item>
+                  <layout class="QHBoxLayout" name="normalizationActionLayout">
+                   <item><widget class="QPushButton" name="rejectNormalizationButton"><property name="text"><string>拒绝</string></property></widget></item>
+                   <item><widget class="QPushButton" name="skipNormalizationButton"><property name="text"><string>跳过</string></property></widget></item>
+                   <item><spacer name="normalizationActionSpacer"><property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+                   <item><widget class="QPushButton" name="approveNormalizationButton"><property name="text"><string>批准合并</string></property></widget></item>
+                  </layout>
+                 </item>
+                </layout>
+               </widget>
+              </widget>
+             </item>
+            </layout>
+           </widget>
           </widget>
-         </widget>
         </item>
        </layout>
       </widget>

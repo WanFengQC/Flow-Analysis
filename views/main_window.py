@@ -4,21 +4,34 @@ from collections.abc import Mapping
 from datetime import date
 from typing import Any
 
-from PySide6.QtCore import QEvent, QTimer, Qt, Signal
-from PySide6.QtGui import QStandardItem, QStandardItemModel
+from PySide6.QtCore import QEvent, QModelIndex, QTimer, Qt, Signal
+from PySide6.QtGui import QKeySequence, QShortcut, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
+    QFormLayout,
+    QFrame,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
     QProgressBar,
+    QPlainTextEdit,
+    QPushButton,
+    QSizePolicy,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ui.ui_main_window import Ui_MainWindow
 from views.relation_product_card import (
     RelationProductCard,
     extract_variation_attributes,
+)
+from views.normalization_candidate_list_model import (
+    NormalizationCandidateListModel,
 )
 
 
@@ -69,9 +82,18 @@ class MultiSelectMonthComboBox(QComboBox):
         time_ranges: list[str],
         selected_ranges: list[str] | None = None,
     ):
-        """用传入时间范围重建选项，并保留指定的选中范围。"""
+        """用传入时间范围重建选项，并确保相对日期与自然月互斥。"""
 
         selected_set = set(selected_ranges or [])
+        selected_natural_months = {
+            time_range
+            for time_range in selected_set
+            if time_range != self.RECENT_30_DAYS_OPTION
+        }
+        # 自然月与最近 30 天不能构成同一个分析任务。若调用方意外传入
+        # 混合状态，自然月优先，避免默认最近 30 天吞掉用户选择的月份。
+        if selected_natural_months:
+            selected_set.discard(self.RECENT_30_DAYS_OPTION)
         self._month_model.clear()
 
         for time_range in time_ranges:
@@ -112,19 +134,54 @@ class MultiSelectMonthComboBox(QComboBox):
         return self.RECENT_30_DAYS_OPTION in self._selected_time_ranges()
 
     def _toggle_month(self, index):
-        """切换被点击项目的勾选状态，并同步收起状态的汇总文本。"""
+        """切换时间范围，并在最近 30 天与自然月之间保持互斥。"""
 
         item = self._month_model.itemFromIndex(index)
         if item is None:
             return
 
+        should_check = item.checkState() != Qt.CheckState.Checked
         item.setCheckState(
-            Qt.CheckState.Unchecked
-            if item.checkState() == Qt.CheckState.Checked
-            else Qt.CheckState.Checked
+            Qt.CheckState.Checked
+            if should_check
+            else Qt.CheckState.Unchecked
         )
+
+        if should_check:
+            if item.text() == self.RECENT_30_DAYS_OPTION:
+                # 相对日期模式只能独立运行，不能与任意自然月混合。
+                self._set_natural_months_checked(False)
+            else:
+                # 用户开始选择自然月时，必须清除初始化时默认勾选的最近 30 天。
+                self._set_recent_30_days_checked(False)
+
         self._update_summary()
         self.selection_changed.emit(self._selected_time_ranges())
+
+    def _set_recent_30_days_checked(self, checked: bool):
+        """同步相对日期选项的内部勾选状态，不依赖下拉框显示文本。"""
+
+        for row in range(self._month_model.rowCount()):
+            item = self._month_model.item(row)
+            if item.text() == self.RECENT_30_DAYS_OPTION:
+                item.setCheckState(
+                    Qt.CheckState.Checked
+                    if checked
+                    else Qt.CheckState.Unchecked
+                )
+                return
+
+    def _set_natural_months_checked(self, checked: bool):
+        """统一切换所有自然月，供用户切入最近 30 天模式时使用。"""
+
+        for row in range(self._month_model.rowCount()):
+            item = self._month_model.item(row)
+            if item.text() != self.RECENT_30_DAYS_OPTION:
+                item.setCheckState(
+                    Qt.CheckState.Checked
+                    if checked
+                    else Qt.CheckState.Unchecked
+                )
 
     def _update_summary(self):
         """将已选时间范围显示在下拉框收起后的只读输入框中。"""
@@ -147,6 +204,12 @@ class MainWindow(QMainWindow):
 
     relation_query_requested = Signal()
     analysis_preparation_requested = Signal()
+    normalization_approve_requested = Signal(str, str)
+    normalization_reject_requested = Signal(str)
+    normalization_skip_requested = Signal(str)
+    normalization_apply_requested = Signal()
+    normalization_persistence_retry_requested = Signal()
+    normalization_candidate_selected = Signal(str)
     _ALL_VARIATION_FILTER_VALUE = "全部"
 
     def __init__(self):
@@ -175,11 +238,25 @@ class MainWindow(QMainWindow):
         self._relation_query_available = False
         self._relation_query_running = False
         self._relation_preparation_running = False
+        # 审核候选只保存 Controller 提供的当前任务内存引用；View 只读取、
+        # 筛选和展示，绝不直接写入 decision 或 approvedCanonical。
+        self._normalization_candidates: list[Mapping[str, Any]] = []
+        self._normalization_candidates_by_id: dict[str, Mapping[str, Any]] = {}
+        self._normalization_conflicts_by_id: dict[str, list[dict[str, Any]]] = {}
+        # 历史参考单独保存，绝不向 candidate 注入或覆写任何审核字段。
+        self._normalization_history_references: dict[str, Mapping[str, Any]] = {}
+        self._normalization_history_load_status = "IDLE"
+        self._normalization_current_candidate_id: str | None = None
+        self._normalization_next_candidate_id: str | None = None
+        self._expanded_normalization_evidence: set[tuple[str, str]] = set()
+        # 重算期间仅锁定会改变审核快照的控件；筛选、列表查看和滚动仍可用。
+        self._normalization_review_editable = True
 
         self._setup_month_selector()
         self._setup_workspace()
         self._setup_status_bar()
         self._setup_relation_query()
+        self._setup_normalization_review()
 
     def _setup_month_selector(self):
         """创建多选时间范围控件，提供最近30天及 2024-01 起的月份。"""
@@ -270,6 +347,1012 @@ class MainWindow(QMainWindow):
         )
         self.show_relation_empty()
         self.set_relation_query_available(False)
+
+    def _setup_normalization_review(self) -> None:
+        """初始化归一候选审核页面的 View 级筛选、列表与交互。"""
+
+        self._normalization_list_model = NormalizationCandidateListModel(self)
+        self.ui.normalizationCandidateListView.setModel(
+            self._normalization_list_model
+        )
+        self.ui.normalizationCandidateListView.setUniformItemSizes(True)
+        self.ui.normalizationCandidateListView.selectionModel().currentChanged.connect(
+            self._on_normalization_list_current_changed
+        )
+
+        self._populate_normalization_filter_controls()
+        self.ui.normalizationSearchLineEdit.textChanged.connect(
+            self._refresh_normalization_review
+        )
+        self.ui.normalizationReasonComboBox.currentIndexChanged.connect(
+            self._refresh_normalization_review
+        )
+        self.ui.normalizationDecisionComboBox.currentIndexChanged.connect(
+            self._refresh_normalization_review
+        )
+        self.ui.normalizationHistoryComboBox.currentIndexChanged.connect(
+            self._refresh_normalization_review
+        )
+        self.ui.normalizationSortComboBox.currentIndexChanged.connect(
+            self._refresh_normalization_review
+        )
+        self.ui.approveNormalizationButton.clicked.connect(
+            self._request_normalization_approval
+        )
+        self.ui.rejectNormalizationButton.clicked.connect(
+            self._request_normalization_rejection
+        )
+        self.ui.skipNormalizationButton.clicked.connect(
+            self._request_normalization_skip
+        )
+        self.ui.applyNormalizationRulesButton.clicked.connect(
+            self._request_normalization_apply
+        )
+        self.ui.retryNormalizationPersistenceButton.clicked.connect(
+            self.normalization_persistence_retry_requested.emit
+        )
+        self.ui.useHistoryCanonicalButton.clicked.connect(
+            self._use_history_canonical
+        )
+        self.ui.viewNormalizationHistoryButton.clicked.connect(
+            self._show_normalization_history_dialog
+        )
+
+        # 快捷键由主窗口接收，但输入焦点在文本框时会主动忽略，避免把用户
+        # 键入的 A/R/S 误解释为审核操作。
+        self._normalization_approve_shortcut = QShortcut(
+            QKeySequence("A"), self
+        )
+        self._normalization_reject_shortcut = QShortcut(
+            QKeySequence("R"), self
+        )
+        self._normalization_skip_shortcut = QShortcut(
+            QKeySequence("S"), self
+        )
+        self._normalization_approve_shortcut.activated.connect(
+            self._request_normalization_approval_from_shortcut
+        )
+        self._normalization_reject_shortcut.activated.connect(
+            self._request_normalization_rejection_from_shortcut
+        )
+        self._normalization_skip_shortcut.activated.connect(
+            self._request_normalization_skip_from_shortcut
+        )
+
+        self.ui.normalizationReviewSplitter.setStretchFactor(0, 35)
+        self.ui.normalizationReviewSplitter.setStretchFactor(1, 65)
+        self.ui.normalizationReviewSplitter.setSizes([360, 670])
+        self._set_normalization_detail_candidate(None)
+        self.set_normalization_result_status("尚未生成正式结果")
+        self.set_normalization_persistence_status("CLEAN")
+        self.set_analysis_result_mode("未归一预览")
+        self.set_normalization_candidates([])
+
+    def _populate_normalization_filter_controls(self) -> None:
+        """填充审核页固定筛选项，内部值始终保持正式 reason/decision 字符串。"""
+
+        self.ui.normalizationReasonComboBox.addItem("全部类型", None)
+        self.ui.normalizationReasonComboBox.addItem(
+            "短语变体",
+            "PHRASE_TOKEN_VARIANT",
+        )
+        self.ui.normalizationReasonComboBox.addItem(
+            "短语概念 Seed",
+            "PHRASE_CONCEPT_SEED",
+        )
+        self.ui.normalizationReasonComboBox.addItem(
+            "格式变体",
+            "COMPACT_SIGNATURE_MATCH",
+        )
+        self.ui.normalizationReasonComboBox.addItem(
+            "已有词形规则",
+            "KNOWN_WORD_ALIAS_VARIANT",
+        )
+        self.ui.normalizationReasonComboBox.addItem(
+            "字符相似",
+            "CHARACTER_SIMILARITY",
+        )
+
+        self.ui.normalizationDecisionComboBox.addItem("全部状态", None)
+        self.ui.normalizationDecisionComboBox.addItem("待审核", "PENDING")
+        self.ui.normalizationDecisionComboBox.addItem("已批准", "APPROVED")
+        self.ui.normalizationDecisionComboBox.addItem("已拒绝", "REJECTED")
+        self.ui.normalizationDecisionComboBox.addItem("已跳过", "SKIPPED")
+        self.ui.normalizationDecisionComboBox.setCurrentIndex(1)
+
+        self.ui.normalizationHistoryComboBox.addItem("全部历史", None)
+        self.ui.normalizationHistoryComboBox.addItem("无历史", "NONE")
+        self.ui.normalizationHistoryComboBox.addItem("有历史", "HAS_HISTORY")
+        self.ui.normalizationHistoryComboBox.addItem("历史冲突", "CONFLICT")
+
+        self.ui.normalizationSortComboBox.addItem("影响程度", "impact")
+        self.ui.normalizationSortComboBox.addItem("频次", "frequency")
+        self.ui.normalizationSortComboBox.addItem("匹配关键词数", "matching")
+        self.ui.normalizationSortComboBox.addItem("置信度", "confidence")
+
+    def set_normalization_history_references(
+        self,
+        references: Mapping[str, Mapping[str, Any]],
+    ) -> None:
+        """接收 Controller 的只读历史参考，不修改候选或当前审核决定。"""
+
+        self._normalization_history_references = {
+            candidate_id: dict(reference)
+            for candidate_id, reference in references.items()
+            if isinstance(candidate_id, str) and isinstance(reference, Mapping)
+        }
+        self._normalization_list_model.set_history_references(
+            self._normalization_history_references
+        )
+        self._refresh_normalization_review(
+            preferred_candidate_id=self._normalization_current_candidate_id
+        )
+
+    def set_normalization_history_load_status(self, status: str) -> None:
+        """展示非核心历史读取状态；失败不阻断候选审核。"""
+
+        self._normalization_history_load_status = status
+        candidate = self._normalization_candidates_by_id.get(
+            self._normalization_current_candidate_id or ""
+        )
+        self._populate_normalization_history(
+            str(candidate.get("id")) if candidate is not None else None
+        )
+
+    def set_normalization_candidates(
+        self,
+        candidates: list[Mapping[str, Any]],
+    ) -> None:
+        """接收 Controller 的候选快照，更新审核 Tab 而不修改候选对象。"""
+
+        self._normalization_candidates = list(candidates)
+        self._normalization_candidates_by_id = {
+            str(candidate.get("id")): candidate
+            for candidate in self._normalization_candidates
+            if isinstance(candidate.get("id"), str)
+        }
+        self._normalization_conflicts_by_id = (
+            self._build_normalization_conflict_index()
+        )
+        self._expanded_normalization_evidence.clear()
+        tab_index = self.ui.resultTabWidget.indexOf(
+            self.ui.normalizationReviewTab
+        )
+        self.ui.resultTabWidget.setTabText(
+            tab_index,
+            f"归一审核 ({len(self._normalization_candidates)})",
+        )
+        self._normalization_current_candidate_id = None
+        self._normalization_next_candidate_id = None
+        self.ui.applyNormalizationRulesButton.setEnabled(
+            self._normalization_review_editable
+            and bool(self._normalization_candidates)
+        )
+        self._refresh_normalization_review()
+
+    def update_normalization_candidate(
+        self,
+        candidate: Mapping[str, Any],
+    ) -> None:
+        """接收 Controller 更新后的单个候选，并保留当前筛选与排序条件。"""
+
+        candidate_id = candidate.get("id")
+        if not isinstance(candidate_id, str):
+            return
+
+        self._normalization_candidates_by_id[candidate_id] = candidate
+        self._normalization_candidates = [
+            self._normalization_candidates_by_id.get(
+                str(existing.get("id")), existing
+            )
+            for existing in self._normalization_candidates
+        ]
+        self._normalization_conflicts_by_id = (
+            self._build_normalization_conflict_index()
+        )
+        self._refresh_normalization_review(
+            preferred_candidate_id=(
+                self._normalization_next_candidate_id
+                or self._normalization_current_candidate_id
+            )
+        )
+        self._normalization_next_candidate_id = None
+
+    def _refresh_normalization_review(
+        self,
+        _unused: object = None,
+        *,
+        preferred_candidate_id: str | None = None,
+    ) -> None:
+        """按当前 View 条件实时过滤、降序排序并刷新候选列表。"""
+
+        visible_candidates = self._visible_normalization_candidates()
+        selected_id = (
+            preferred_candidate_id
+            or self._normalization_current_candidate_id
+        )
+        self._normalization_list_model.set_candidates(visible_candidates)
+        self._update_normalization_progress()
+
+        has_candidates = bool(self._normalization_candidates)
+        has_visible_candidates = bool(visible_candidates)
+        self.ui.normalizationCandidateListView.setVisible(has_visible_candidates)
+        self.ui.normalizationReviewEmptyLabel.setVisible(
+            not has_visible_candidates
+        )
+        self.ui.normalizationReviewEmptyLabel.setText(
+            "当前分析未发现需要人工审核的归一候选。"
+            if not has_candidates
+            else "当前筛选条件下没有匹配候选。"
+        )
+
+        if not has_visible_candidates:
+            self._normalization_current_candidate_id = None
+            self._set_normalization_detail_candidate(None)
+            return
+
+        visible_ids = [
+            str(candidate["id"])
+            for candidate in visible_candidates
+            if isinstance(candidate.get("id"), str)
+        ]
+        if selected_id not in visible_ids:
+            selected_id = visible_ids[0]
+        self._select_normalization_candidate(selected_id)
+
+    def _visible_normalization_candidates(self) -> list[Mapping[str, Any]]:
+        """只在 View 内按文本、类型、状态筛选候选，并按选定字段降序。"""
+
+        keyword = self.ui.normalizationSearchLineEdit.text().strip().lower()
+        selected_reason = self.ui.normalizationReasonComboBox.currentData()
+        selected_decision = self.ui.normalizationDecisionComboBox.currentData()
+        selected_history = self.ui.normalizationHistoryComboBox.currentData()
+
+        candidates = []
+        for candidate in self._normalization_candidates:
+            if not self._candidate_matches_normalization_search(candidate, keyword):
+                continue
+            if (
+                selected_reason is not None
+                and selected_reason not in candidate.get("reasonTypes", [])
+            ):
+                continue
+            if (
+                selected_decision is not None
+                and candidate.get("decision", "PENDING") != selected_decision
+            ):
+                continue
+            candidate_id = candidate.get("id")
+            reference = (
+                self._normalization_history_references.get(candidate_id)
+                if isinstance(candidate_id, str)
+                else None
+            )
+            history_count = (
+                reference.get("totalDecisionCount", 0)
+                if isinstance(reference, Mapping)
+                else 0
+            )
+            if selected_history == "NONE" and history_count:
+                continue
+            if selected_history == "HAS_HISTORY" and not history_count:
+                continue
+            if selected_history == "CONFLICT" and not (
+                isinstance(reference, Mapping)
+                and (
+                    reference.get("hasDecisionConflict")
+                    or reference.get("hasCanonicalConflict")
+                )
+            ):
+                continue
+            candidates.append(candidate)
+
+        sort_key = self.ui.normalizationSortComboBox.currentData()
+        sort_field = {
+            "impact": "impactWeeklyExposure",
+            "frequency": "totalFrequency",
+            "matching": "matchingKeywordCount",
+            "confidence": "confidence",
+        }.get(sort_key, "impactWeeklyExposure")
+        return sorted(
+            candidates,
+            key=lambda candidate: (
+                -self._normalization_number(candidate.get(sort_field)),
+                str(candidate.get("id", "")),
+            ),
+        )
+
+    @staticmethod
+    def _candidate_matches_normalization_search(
+        candidate: Mapping[str, Any],
+        keyword: str,
+    ) -> bool:
+        """搜索 machine suggestion、人工 canonical 与所有真实 variant。"""
+
+        if not keyword:
+            return True
+        values = [
+            candidate.get("suggestedCanonical"),
+            candidate.get("approvedCanonical"),
+            *candidate.get("variants", []),
+        ]
+        return any(
+            keyword in value.lower()
+            for value in values
+            if isinstance(value, str)
+        )
+
+    def _update_normalization_progress(self) -> None:
+        """根据 Controller 当前内存候选实时汇总审核进度。"""
+
+        total = len(self._normalization_candidates)
+        decision_counts = {
+            decision: sum(
+                candidate.get("decision", "PENDING") == decision
+                for candidate in self._normalization_candidates
+            )
+            for decision in ("PENDING", "APPROVED", "REJECTED", "SKIPPED")
+        }
+        reviewed = total - decision_counts["PENDING"]
+        self.ui.normalizationProgressLabel.setText(
+            f"已审核 {reviewed} / {total} · 待审核 "
+            f"{decision_counts['PENDING']} · 批准 "
+            f"{decision_counts['APPROVED']} · 拒绝 "
+            f"{decision_counts['REJECTED']} · 跳过 "
+            f"{decision_counts['SKIPPED']}"
+        )
+
+    def _on_normalization_list_current_changed(
+        self,
+        current: QModelIndex,
+        _previous: QModelIndex,
+    ) -> None:
+        """将 QListView 当前项转换为候选 ID，再刷新右侧详情。"""
+
+        candidate_id = current.data(
+            NormalizationCandidateListModel.CandidateIdRole
+        )
+        if isinstance(candidate_id, str):
+            self._normalization_current_candidate_id = candidate_id
+            self._set_normalization_detail_candidate(
+                self._normalization_candidates_by_id.get(candidate_id)
+            )
+            self.normalization_candidate_selected.emit(candidate_id)
+            return
+
+        self._normalization_current_candidate_id = None
+        self._set_normalization_detail_candidate(None)
+
+    def _select_normalization_candidate(self, candidate_id: str) -> None:
+        """在当前过滤列表中选中目标候选；不可见时保持现有筛选状态。"""
+
+        for row in range(self._normalization_list_model.rowCount()):
+            index = self._normalization_list_model.index(row, 0)
+            if (
+                index.data(NormalizationCandidateListModel.CandidateIdRole)
+                == candidate_id
+            ):
+                self.ui.normalizationCandidateListView.setCurrentIndex(index)
+                self.ui.normalizationCandidateListView.scrollTo(index)
+                return
+
+    def _set_normalization_detail_candidate(
+        self,
+        candidate: Mapping[str, Any] | None,
+    ) -> None:
+        """以当前候选的只读数据重建右侧详情，未选择时显示空状态。"""
+
+        has_candidate = candidate is not None
+        self.ui.normalizationDetailEmptyLabel.setVisible(not has_candidate)
+        self.ui.normalizationDetailContent.setVisible(has_candidate)
+        for button in (
+            self.ui.approveNormalizationButton,
+            self.ui.rejectNormalizationButton,
+            self.ui.skipNormalizationButton,
+        ):
+            button.setEnabled(
+                has_candidate and self._normalization_review_editable
+            )
+        self.ui.normalizationCanonicalLineEdit.setEnabled(
+            has_candidate and self._normalization_review_editable
+        )
+        if not has_candidate:
+            self._clear_layout(self.ui.normalizationVariantDetailsLayout)
+            self._clear_layout(self.ui.normalizationConflictLayout)
+            self._populate_normalization_history(None)
+            return
+
+        assert candidate is not None
+        candidate_id = str(candidate.get("id", ""))
+        suggested_canonical = str(candidate.get("suggestedCanonical") or "")
+        self.ui.normalizationSuggestedCanonicalLabel.setText(suggested_canonical)
+        self.ui.normalizationCanonicalLineEdit.setText(
+            str(candidate.get("approvedCanonical") or suggested_canonical)
+        )
+        self.ui.normalizationReasonBadgeLabel.setText(
+            " · ".join(
+                self._normalization_reason_name(reason)
+                for reason in candidate.get("reasonTypes", [])
+                if isinstance(reason, str)
+            )
+        )
+        self.ui.normalizationReasonBadgeLabel.setStyleSheet(
+            "padding: 3px 7px; border: 1px solid #d6dce5; "
+            "border-radius: 6px;"
+        )
+        self.ui.normalizationConfidenceValueLabel.setText(
+            f"{self._normalization_number(candidate.get('confidence')):.2f}"
+        )
+        self.ui.normalizationImpactValueLabel.setText(
+            self._format_normalization_number(
+                candidate.get("impactWeeklyExposure"),
+                decimal_places=2,
+            )
+        )
+        self.ui.normalizationMonthsValueLabel.setText(
+            " / ".join(
+                month
+                for month in candidate.get("months", [])
+                if isinstance(month, str)
+            )
+            or "—"
+        )
+        self.ui.normalizationFrequencyValueLabel.setText(
+            self._format_normalization_number(candidate.get("totalFrequency"))
+        )
+        self.ui.normalizationMatchingValueLabel.setText(
+            self._format_normalization_number(
+                candidate.get("matchingKeywordCount")
+            )
+        )
+        self._populate_normalization_variant_details(candidate_id, candidate)
+        self._populate_normalization_conflicts(candidate_id)
+        self._populate_normalization_history(candidate_id)
+
+    def _populate_normalization_history(self, candidate_id: str | None) -> None:
+        """将历史信息作为参考展示，禁止它改变当前候选或任何决策。"""
+
+        if candidate_id is None:
+            self.ui.normalizationHistorySummaryLabel.setText("未选择候选。")
+            self.ui.useHistoryCanonicalButton.setEnabled(False)
+            self.ui.viewNormalizationHistoryButton.setEnabled(False)
+            return
+        if self._normalization_history_load_status == "LOADING":
+            self.ui.normalizationHistorySummaryLabel.setText("历史审核记录加载中...")
+            self.ui.useHistoryCanonicalButton.setEnabled(False)
+            self.ui.viewNormalizationHistoryButton.setEnabled(False)
+            return
+        if self._normalization_history_load_status == "LOAD_FAILED":
+            self.ui.normalizationHistorySummaryLabel.setText(
+                "历史审核记录加载失败；当前候选仍可正常审核。"
+            )
+            self.ui.useHistoryCanonicalButton.setEnabled(False)
+            self.ui.viewNormalizationHistoryButton.setEnabled(False)
+            return
+
+        reference = self._normalization_history_references.get(candidate_id)
+        if not isinstance(reference, Mapping) or not reference.get("totalDecisionCount"):
+            self.ui.normalizationHistorySummaryLabel.setText("无历史审核记录。")
+            self.ui.useHistoryCanonicalButton.setEnabled(False)
+            self.ui.viewNormalizationHistoryButton.setEnabled(False)
+            return
+
+        total = self._normalization_number(reference.get("totalDecisionCount"))
+        decisions = reference.get("decisionCounts", {})
+        summary_lines = [f"历史审核：{int(total)} 次"]
+        latest_decision = self._normalization_history_decision_name(
+            reference.get("latestDecision")
+        )
+        latest_at = reference.get("latestReviewedAt") or "—"
+        summary_lines.append(f"最新：{latest_decision} · {latest_at}")
+        latest_canonical = reference.get("latestApprovedCanonical")
+        if isinstance(latest_canonical, str) and latest_canonical:
+            summary_lines.append(f"最近批准 canonical：{latest_canonical}")
+        if isinstance(decisions, Mapping):
+            summary_lines.append(
+                f" · 批准 {self._normalization_number(decisions.get('APPROVED')):.0f}"
+                f" · 拒绝 {self._normalization_number(decisions.get('REJECTED')):.0f}"
+                f" · 跳过 {self._normalization_number(decisions.get('SKIPPED')):.0f}"
+            )
+        canonical_items = reference.get("approvedCanonicals", [])
+        if isinstance(canonical_items, list) and canonical_items:
+            canonical_text = " · ".join(
+                f"{item.get('canonical')} ×{item.get('count')}"
+                for item in canonical_items
+                if isinstance(item, Mapping)
+                and isinstance(item.get("canonical"), str)
+            )
+            if canonical_text:
+                summary_lines.append(f"历史 canonical：{canonical_text}")
+        if reference.get("hasDecisionConflict") or reference.get("hasCanonicalConflict"):
+            summary_lines.append("⚠ 历史审核存在不同结论")
+        self.ui.normalizationHistorySummaryLabel.setText("\n".join(summary_lines))
+        can_use_canonical = bool(reference.get("latestApprovedCanonical"))
+        self.ui.useHistoryCanonicalButton.setEnabled(can_use_canonical)
+        self.ui.viewNormalizationHistoryButton.setEnabled(True)
+
+    @staticmethod
+    def _normalization_history_decision_name(decision: object) -> str:
+        """用中文展示仅供参考的历史决定，不对当前候选作任何暗示。"""
+
+        return {
+            "APPROVED": "已批准",
+            "REJECTED": "已拒绝",
+            "SKIPPED": "已跳过",
+        }.get(str(decision), "—")
+
+    def _use_history_canonical(self) -> None:
+        """仅将历史批准词填入编辑框，用户仍须明确点击当前批准按钮。"""
+
+        reference = self._normalization_history_references.get(
+            self._normalization_current_candidate_id or ""
+        )
+        canonical = (
+            reference.get("latestApprovedCanonical")
+            if isinstance(reference, Mapping)
+            else None
+        )
+        if isinstance(canonical, str) and canonical.strip():
+            self.ui.normalizationCanonicalLineEdit.setText(canonical)
+            self.ui.normalizationCanonicalLineEdit.setFocus()
+
+    def _show_normalization_history_dialog(self) -> None:
+        """显示最多 20 条脱敏历史记录，仅提供阅读，不提供任何审核操作。"""
+
+        reference = self._normalization_history_references.get(
+            self._normalization_current_candidate_id or ""
+        )
+        if not isinstance(reference, Mapping):
+            return
+        records = reference.get("recentDecisions", [])
+        if not isinstance(records, list):
+            return
+        lines: list[str] = []
+        for index, record in enumerate(records[:20], start=1):
+            if not isinstance(record, Mapping):
+                continue
+            context = record.get("context")
+            context_text = (
+                ", ".join(
+                    f"{key}={value}"
+                    for key, value in context.items()
+                )
+                if isinstance(context, Mapping)
+                else ""
+            )
+            canonical = record.get("approvedCanonical") or "-"
+            reasons = ", ".join(record.get("reasonTypes", []))
+            lines.extend(
+                [
+                    f"{index}. 时间：{record.get('reviewedAt') or '-'}",
+                    f"   决定：{record.get('decision') or '-'} · 标准词：{canonical}",
+                    f"   候选：{record.get('candidateId') or '-'} · 原因：{reasons or '-'}",
+                    f"   上下文：{context_text or '-'}",
+                ]
+            )
+        dialog = QDialog(self)
+        dialog.setWindowTitle("历史审核参考")
+        dialog.resize(720, 480)
+        layout = QVBoxLayout(dialog)
+        text_edit = QPlainTextEdit(dialog)
+        text_edit.setReadOnly(True)
+        text_edit.setPlainText("\n".join(lines) or "无历史审核记录。")
+        layout.addWidget(text_edit)
+        close_button = QPushButton("关闭", dialog)
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
+        dialog.exec()
+
+    def _populate_normalization_variant_details(
+        self,
+        candidate_id: str,
+        candidate: Mapping[str, Any],
+    ) -> None:
+        """纵向展示任意数量 variant，兼容未来三项以上的候选组。"""
+
+        layout = self.ui.normalizationVariantDetailsLayout
+        self._clear_layout(layout)
+        details_by_variant = {
+            detail.get("variant"): detail
+            for detail in candidate.get("variantDetails", [])
+            if isinstance(detail, Mapping) and isinstance(detail.get("variant"), str)
+        }
+        variants = [
+            variant
+            for variant in candidate.get("variants", [])
+            if isinstance(variant, str)
+        ]
+        for index, variant in enumerate(variants, start=1):
+            detail = details_by_variant.get(variant, {"variant": variant})
+            layout.addWidget(
+                self._build_normalization_variant_widget(
+                    candidate_id,
+                    index,
+                    variant,
+                    detail,
+                    candidate.get("evidence", []),
+                    "PHRASE_CONCEPT_SEED"
+                    in candidate.get("reasonTypes", []),
+                )
+            )
+
+    def _build_normalization_variant_widget(
+        self,
+        candidate_id: str,
+        index: int,
+        variant: str,
+        detail: Mapping[str, Any],
+        fallback_evidence: object,
+        is_phrase_concept: bool,
+    ) -> QWidget:
+        """创建单个 variant 的只读统计、月度分布和可展开关键词证据。"""
+
+        group_title = (
+            f"原始短语：{variant}"
+            if is_phrase_concept
+            else f"Variant {index}：{variant}"
+        )
+        group = QGroupBox(group_title)
+        group_layout = QVBoxLayout(group)
+        statistic_label = QLabel(
+            "频次："
+            f"{self._format_normalization_number(detail.get('frequency'))}    "
+            "匹配搜索词："
+            f"{self._format_normalization_number(detail.get('matchingKeywordCount'))}    "
+            "影响周曝光："
+            f"{self._format_normalization_number(detail.get('impactWeeklyExposure'), decimal_places=2)}"
+        )
+        statistic_label.setWordWrap(True)
+        group_layout.addWidget(statistic_label)
+
+        monthly_stats = detail.get("monthlyStats")
+        if isinstance(monthly_stats, list) and monthly_stats:
+            monthly_widget = QWidget(group)
+            monthly_layout = QFormLayout(monthly_widget)
+            monthly_layout.setContentsMargins(0, 0, 0, 0)
+            for row in monthly_stats:
+                if not isinstance(row, Mapping):
+                    continue
+                month = str(row.get("month") or "")
+                values = (
+                    f"频次 {self._format_normalization_number(row.get('frequency'))} · "
+                    f"匹配词 {self._format_normalization_number(row.get('matchingKeywordCount'))} · "
+                    "周曝光 "
+                    f"{self._format_normalization_number(row.get('impactWeeklyExposure'), decimal_places=2)}"
+                )
+                monthly_layout.addRow(QLabel(month), QLabel(values))
+            group_layout.addWidget(monthly_widget)
+        else:
+            months = detail.get("months", [])
+            month_text = " / ".join(
+                month for month in months if isinstance(month, str)
+            )
+            group_layout.addWidget(QLabel(f"出现月份：{month_text or '—'}"))
+
+        evidence = detail.get("evidence")
+        if not isinstance(evidence, list):
+            evidence = fallback_evidence if isinstance(fallback_evidence, list) else []
+        evidence = [item for item in evidence if isinstance(item, str)]
+        expanded_key = (candidate_id, variant)
+        evidence_limit = 20 if expanded_key in self._expanded_normalization_evidence else 5
+        evidence_label = QLabel(
+            "\n".join(f"• {item}" for item in evidence[:evidence_limit])
+            or "暂无可展示的关键词证据"
+        )
+        evidence_label.setWordWrap(True)
+        evidence_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        group_layout.addWidget(evidence_label)
+        if len(evidence) > 5:
+            toggle_button = QToolButton(group)
+            toggle_button.setText(
+                "收起证据" if expanded_key in self._expanded_normalization_evidence else "查看更多"
+            )
+            toggle_button.clicked.connect(
+                lambda _checked=False, key=expanded_key: self._toggle_normalization_evidence(key)
+            )
+            group_layout.addWidget(toggle_button)
+        return group
+
+    def _toggle_normalization_evidence(
+        self,
+        expanded_key: tuple[str, str],
+    ) -> None:
+        """仅切换当前 variant 的 5/20 条展示上限，不改动原始 evidence。"""
+
+        if expanded_key in self._expanded_normalization_evidence:
+            self._expanded_normalization_evidence.remove(expanded_key)
+        else:
+            self._expanded_normalization_evidence.add(expanded_key)
+        candidate = self._normalization_candidates_by_id.get(expanded_key[0])
+        if candidate is not None:
+            self._set_normalization_detail_candidate(candidate)
+
+    def _populate_normalization_conflicts(self, candidate_id: str) -> None:
+        """显示共享 variant 的其他候选，并允许用户直接跳转查看。"""
+
+        layout = self.ui.normalizationConflictLayout
+        self._clear_layout(layout)
+        conflicts = self._normalization_conflicts_by_id.get(candidate_id, [])
+        if not conflicts:
+            layout.addWidget(QLabel("未发现跨候选组重复 variant。"))
+            return
+
+        layout.addWidget(
+            QLabel(f"⚠ 存在 {len(conflicts)} 个其他候选关联；点击可直接查看。")
+        )
+        for conflict in conflicts:
+            button = QToolButton(self.ui.normalizationConflictContainer)
+            button.setToolButtonStyle(
+                Qt.ToolButtonStyle.ToolButtonTextOnly
+            )
+            button.setText(
+                "查看候选："
+                f"{conflict['canonical']} · {conflict['otherVariants']} · "
+                f"{conflict['reasonTypes']} · "
+                f"{self._format_normalization_number(conflict['impact'], decimal_places=2)}"
+            )
+            button.clicked.connect(
+                lambda _checked=False, target_id=conflict["candidateId"]: self._jump_to_normalization_candidate(target_id)
+            )
+            layout.addWidget(button)
+
+    def _build_normalization_conflict_index(self) -> dict[str, list[dict[str, Any]]]:
+        """从当前候选列表构建只读共享 variant 索引，不自动解决任何冲突。"""
+
+        variant_to_candidates: dict[str, list[Mapping[str, Any]]] = {}
+        for candidate in self._normalization_candidates:
+            for variant in candidate.get("variants", []):
+                if isinstance(variant, str):
+                    variant_to_candidates.setdefault(variant, []).append(candidate)
+
+        conflicts_by_id: dict[str, list[dict[str, Any]]] = {}
+        for candidate in self._normalization_candidates:
+            candidate_id = candidate.get("id")
+            if not isinstance(candidate_id, str):
+                continue
+            shared_by_other_id: dict[str, set[str]] = {}
+            for variant in candidate.get("variants", []):
+                if not isinstance(variant, str):
+                    continue
+                for other in variant_to_candidates.get(variant, []):
+                    other_id = other.get("id")
+                    if isinstance(other_id, str) and other_id != candidate_id:
+                        shared_by_other_id.setdefault(other_id, set()).add(variant)
+
+            conflicts_by_id[candidate_id] = [
+                {
+                    "candidateId": other_id,
+                    "canonical": str(other.get("suggestedCanonical") or "—"),
+                    "otherVariants": " / ".join(sorted(shared_variants)),
+                    "reasonTypes": " · ".join(
+                        self._normalization_reason_name(reason)
+                        for reason in other.get("reasonTypes", [])
+                        if isinstance(reason, str)
+                    ),
+                    "impact": other.get("impactWeeklyExposure"),
+                }
+                for other_id, shared_variants in shared_by_other_id.items()
+                if (other := self._normalization_candidates_by_id.get(other_id))
+                is not None
+            ]
+            conflicts_by_id[candidate_id].sort(
+                key=lambda conflict: -self._normalization_number(
+                    conflict["impact"]
+                )
+            )
+        return conflicts_by_id
+
+    def _jump_to_normalization_candidate(self, candidate_id: str) -> None:
+        """清除会阻止跳转的筛选条件，并定位到冲突候选。"""
+
+        self.ui.normalizationSearchLineEdit.clear()
+        self.ui.normalizationReasonComboBox.setCurrentIndex(0)
+        self.ui.normalizationDecisionComboBox.setCurrentIndex(0)
+        self._refresh_normalization_review(
+            preferred_candidate_id=candidate_id
+        )
+
+    def _request_normalization_approval(self) -> None:
+        """校验可编辑 canonical 后，向 Controller 发出批准请求。"""
+
+        if not self._normalization_review_editable:
+            return
+        candidate_id = self._normalization_current_candidate_id
+        canonical = self.ui.normalizationCanonicalLineEdit.text().strip()
+        if not candidate_id:
+            return
+        if not canonical:
+            QMessageBox.warning(self, "请输入标准词", "请输入标准词。")
+            self.ui.normalizationCanonicalLineEdit.setFocus()
+            return
+        self._prepare_normalization_next_selection()
+        self.normalization_approve_requested.emit(candidate_id, canonical)
+
+    def _request_normalization_rejection(self) -> None:
+        """向 Controller 发出拒绝当前候选组的请求。"""
+
+        if not self._normalization_review_editable:
+            return
+        if not self._normalization_current_candidate_id:
+            return
+        self._prepare_normalization_next_selection()
+        self.normalization_reject_requested.emit(
+            self._normalization_current_candidate_id
+        )
+
+    def _request_normalization_skip(self) -> None:
+        """向 Controller 发出暂时跳过当前候选组的请求。"""
+
+        if not self._normalization_review_editable:
+            return
+        if not self._normalization_current_candidate_id:
+            return
+        self._prepare_normalization_next_selection()
+        self.normalization_skip_requested.emit(
+            self._normalization_current_candidate_id
+        )
+
+    def _request_normalization_apply(self) -> None:
+        """将整批已审核状态交给 Controller，View 不参与规则编译或重算。"""
+
+        if self._normalization_review_editable:
+            self.normalization_apply_requested.emit()
+
+    def set_normalization_review_editable(self, editable: bool) -> None:
+        """切换审核写操作；筛选、搜索、查看与滚动始终不受影响。"""
+
+        self._normalization_review_editable = editable
+        self.ui.applyNormalizationRulesButton.setEnabled(
+            editable and bool(self._normalization_candidates)
+        )
+        current_candidate = self._normalization_candidates_by_id.get(
+            self._normalization_current_candidate_id or ""
+        )
+        self._set_normalization_detail_candidate(current_candidate)
+
+    def set_normalization_result_status(self, status: str) -> None:
+        """展示 Controller 判定的正式结果状态，不在 View 推导业务状态。"""
+
+        self.ui.normalizationResultStatusLabel.setText(status)
+
+    def set_analysis_result_mode(self, mode: str) -> None:
+        """在数据页标明当前表格应被解释为预览、正式或旧版正式结果。"""
+
+        self.ui.analysisResultModeLabel.setText(mode)
+
+    def set_normalization_persistence_status(self, status: str) -> None:
+        """展示 Controller 提供的审核持久化状态，并仅在失败/未保存时开放重试。"""
+
+        presentation = {
+            "CLEAN": "审核记录已保存",
+            "SAVING": "正在保存审核记录...",
+            "UNSAVED": "有未保存的审核记录",
+            "SAVE_FAILED": "审核记录保存失败，可重试",
+        }
+        self.ui.normalizationPersistenceStatusLabel.setText(
+            presentation.get(status, "审核记录状态未知")
+        )
+        self.ui.retryNormalizationPersistenceButton.setVisible(
+            status in {"UNSAVED", "SAVE_FAILED"}
+        )
+        self.ui.retryNormalizationPersistenceButton.setEnabled(
+            status in {"UNSAVED", "SAVE_FAILED"}
+        )
+
+    def show_normalization_rule_conflicts(
+        self,
+        conflicts: list[Mapping[str, Any]],
+    ) -> None:
+        """显示可定位的阻断项，避免只向用户提示笼统的“规则冲突”。"""
+
+        details = []
+        for conflict in conflicts:
+            variant = str(conflict.get("variant") or "—")
+            canonical_values = " / ".join(
+                str(value)
+                for value in conflict.get("canonical_values", [])
+            )
+            candidate_ids = "、".join(
+                str(value)
+                for value in conflict.get("source_candidate_ids", [])
+            )
+            conflict_type = str(conflict.get("conflict_type") or "规则冲突")
+            details.append(
+                f"{conflict_type}\n"
+                f"variant：{variant}\n"
+                f"canonical：{canonical_values or '—'}\n"
+                f"候选：{candidate_ids or '—'}"
+            )
+
+        QMessageBox.warning(
+            self,
+            "无法应用审核结果",
+            "发现不可执行的人工归一规则，请先解决以下候选：\n\n"
+            + "\n\n".join(details),
+        )
+
+    def _request_normalization_approval_from_shortcut(self) -> None:
+        """仅在非文本输入状态下响应 A，按钮点击不受该保护限制。"""
+
+        if not self._normalization_input_has_focus():
+            self._request_normalization_approval()
+
+    def _request_normalization_rejection_from_shortcut(self) -> None:
+        """仅在非文本输入状态下响应 R，按钮点击不受该保护限制。"""
+
+        if not self._normalization_input_has_focus():
+            self._request_normalization_rejection()
+
+    def _request_normalization_skip_from_shortcut(self) -> None:
+        """仅在非文本输入状态下响应 S，按钮点击不受该保护限制。"""
+
+        if not self._normalization_input_has_focus():
+            self._request_normalization_skip()
+
+    def _prepare_normalization_next_selection(self) -> None:
+        """记录当前过滤列表的下一项，决定变更后自动提高审核效率。"""
+
+        current_row = self.ui.normalizationCandidateListView.currentIndex().row()
+        row_count = self._normalization_list_model.rowCount()
+        next_row = current_row + 1 if current_row + 1 < row_count else current_row - 1
+        self._normalization_next_candidate_id = None
+        if 0 <= next_row < row_count:
+            self._normalization_next_candidate_id = self._normalization_list_model.index(
+                next_row,
+                0,
+            ).data(NormalizationCandidateListModel.CandidateIdRole)
+
+    def _normalization_input_has_focus(self) -> bool:
+        """确保 A/R/S 在搜索或 canonical 输入时不会污染人工输入。"""
+
+        return isinstance(self.focusWidget(), type(self.ui.asinLineEdit))
+
+    @staticmethod
+    def _normalization_reason_name(reason_type: str) -> str:
+        """将内部规则来源映射为审核详情的友好名称。"""
+
+        return {
+            "PHRASE_TOKEN_VARIANT": "短语变体",
+            "PHRASE_CONCEPT_SEED": "短语概念 Seed",
+            "COMPACT_SIGNATURE_MATCH": "格式变体",
+            "KNOWN_WORD_ALIAS_VARIANT": "已有词形规则",
+            "CHARACTER_SIMILARITY": "字符相似",
+        }.get(reason_type, reason_type)
+
+    @staticmethod
+    def _normalization_number(value: object) -> float:
+        """将展示排序字段安全转为数值，缺失值自然排在降序末尾。"""
+
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return 0.0
+        return float(value)
+
+    @staticmethod
+    def _format_normalization_number(
+        value: object,
+        *,
+        decimal_places: int = 0,
+    ) -> str:
+        """统一格式化候选统计，缺失值不伪造为零。"""
+
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return "—"
+        return f"{float(value):,.{decimal_places}f}"
+
+    @staticmethod
+    def _clear_layout(layout) -> None:
+        """删除详情区动态控件，避免筛选或选择后残留旧 candidate 内容。"""
+
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+            child_layout = item.layout()
+            if child_layout is not None:
+                MainWindow._clear_layout(child_layout)
 
     def _setup_status_bar(self):
         """初始化底部临时消息、进度和永久运行状态控件。"""
@@ -426,21 +1509,22 @@ class MainWindow(QMainWindow):
 
         self.ui.resultTableView.setModel(model)
 
-    def relation_query_parameters(self) -> dict[str, str | None]:
-        """读取关联查询输入，并集中计算实际请求使用的最新时间范围。"""
+    def relation_query_parameters(self) -> dict[str, object]:
+        """读取关联查询输入，并固定后续分析使用的全部月份顺序。"""
 
         asin = self.ui.asinLineEdit.text().strip().upper()
-        selected_ranges = self.month_selector.selected_time_ranges()
+        analysis_months = self.selected_analysis_months()
 
-        if not selected_ranges:
+        if not analysis_months:
             return {
                 "asin": asin,
                 "selected_time_range": None,
                 "month": None,
                 "display_time_range": None,
+                "analysis_months": [],
             }
 
-        if MultiSelectMonthComboBox.RECENT_30_DAYS_OPTION in selected_ranges:
+        if analysis_months == [""]:
             return {
                 "asin": asin,
                 "selected_time_range": (
@@ -450,18 +1534,46 @@ class MainWindow(QMainWindow):
                 "display_time_range": (
                     MultiSelectMonthComboBox.RECENT_30_DAYS_OPTION
                 ),
+                # 最近 30 天是一个独立的相对时间范围，不能与自然月混合
+                # 成跨月份任务；后续仍由 Controller 原样传给接口。
+                "analysis_months": [""],
             }
 
-        latest_month = max(
-            selected_ranges,
-            key=self._month_sort_key,
+        # relation/source 只查询最新自然月；分析则必须保留所有自然月的
+        # 完整快照，后续 Controller 不得再从 UI 重新读取月份。
+        relation_month = analysis_months[0]
+        display_time_range = (
+            f"{relation_month[:4]}-{relation_month[4:]}"
         )
         return {
             "asin": asin,
-            "selected_time_range": latest_month,
-            "month": latest_month.replace("-", ""),
-            "display_time_range": latest_month,
+            "selected_time_range": display_time_range,
+            "month": relation_month,
+            "display_time_range": display_time_range,
+            "analysis_months": analysis_months,
         }
+
+    def selected_analysis_months(self) -> list[str]:
+        """返回分析链路使用的完整月份快照，最近 30 天以空字符串表示。"""
+
+        natural_months = self.month_selector.selected_months()
+        if natural_months:
+            # 防御旧状态遗留的混合勾选：自然月一旦存在，不能让最近 30 天
+            # 的默认标记覆盖用户实际选择的多月任务。
+            ordered_months = sorted(
+                natural_months,
+                key=self._month_sort_key,
+                reverse=True,
+            )
+            return [
+                selected_month.replace("-", "")
+                for selected_month in ordered_months
+            ]
+
+        if self.month_selector.is_recent_30_days_selected():
+            return [""]
+
+        return []
 
     def set_relation_query_available(self, available: bool):
         """根据 Cookie 与 ApiService 状态控制查询按钮是否可用。"""

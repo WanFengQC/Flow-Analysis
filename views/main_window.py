@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QProgressBar,
 )
 
@@ -145,6 +146,7 @@ class MainWindow(QMainWindow):
     """Flow Analysis 主窗口，仅负责界面展示、输入读取和状态更新。"""
 
     relation_query_requested = Signal()
+    analysis_preparation_requested = Signal()
     _ALL_VARIATION_FILTER_VALUE = "全部"
 
     def __init__(self):
@@ -172,6 +174,7 @@ class MainWindow(QMainWindow):
         self._no_match_relation_label: QLabel | None = None
         self._relation_query_available = False
         self._relation_query_running = False
+        self._relation_preparation_running = False
 
         self._setup_month_selector()
         self._setup_workspace()
@@ -262,6 +265,9 @@ class MainWindow(QMainWindow):
         self.ui.selectVisibleRelationButton.clicked.connect(
             self._toggle_select_visible_relation_items
         )
+        self.ui.startAnalysisButton.clicked.connect(
+            self._emit_analysis_preparation_requested
+        )
         self.show_relation_empty()
         self.set_relation_query_available(False)
 
@@ -297,8 +303,15 @@ class MainWindow(QMainWindow):
         if (
             self._relation_query_available
             and not self._relation_query_running
+            and not self._relation_preparation_running
         ):
             self.relation_query_requested.emit()
+
+    def _emit_analysis_preparation_requested(self):
+        """将“开始分析”收敛为 Controller 可编排的预处理入口。"""
+
+        if not self._relation_preparation_running:
+            self.analysis_preparation_requested.emit()
 
     def set_status(self, message: str, timeout_ms: int = 0):
         """在状态栏左侧显示 Controller 传入的临时状态消息。"""
@@ -341,6 +354,61 @@ class MainWindow(QMainWindow):
         self.analysis_progress_bar.setValue(max(0, min(value, 100)))
         if message:
             self.set_status(message)
+
+    def set_relation_preparation_running(self, running: bool):
+        """锁定预处理期间会改变关联结果上下文的界面交互。"""
+
+        self._relation_preparation_running = running
+        self.ui.startAnalysisButton.setEnabled(not running)
+
+        # 当前尚未实现取消业务，继续保持取消按钮的既有禁用状态。
+        self.ui.cancelAnalysisButton.setEnabled(False)
+        self.analysis_progress_bar.setVisible(running)
+        if not running:
+            self.analysis_progress_bar.setValue(0)
+
+        self.ui.asinLineEdit.setEnabled(
+            not running and not self._relation_query_running
+        )
+        self.month_selector.setEnabled(
+            not running and not self._relation_query_running
+        )
+        self.ui.asinQueryButton.setEnabled(
+            self._relation_query_available
+            and not self._relation_query_running
+            and not running
+        )
+
+        for combo_box in self._variation_filter_combos.values():
+            combo_box.setEnabled(not running)
+        self.ui.resetRelationFiltersButton.setEnabled(
+            bool(self._variation_filter_combos) and not running
+        )
+        for _, _, card in self._relation_entries:
+            card.setEnabled(not running)
+
+        self._update_relation_selection_controls()
+
+    def ask_reversing_data_retry(self, asin: str) -> bool:
+        """在 Qt 主线程询问用户是否重新处理当前失败的单个 ASIN。"""
+
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Warning)
+        dialog.setWindowTitle("获取数据失败")
+        dialog.setText("获取数据失败")
+        dialog.setInformativeText(
+            f"ASIN：{asin}\n\n"
+            "已自动尝试 4 次，但仍未获取到有效数据。\n\n"
+            "可能是 SellerSprite 页面尚未完成预热，\n"
+            "或者当前 ASIN / 时间范围暂无数据。"
+        )
+        retry_button = dialog.addButton(
+            "重试",
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        dialog.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        dialog.exec()
+        return dialog.clickedButton() is retry_button
 
     def set_task_summary(self, task_name: str, record_count: int):
         """更新工作区顶部的当前任务说明和数据记录数量。"""
@@ -399,17 +467,26 @@ class MainWindow(QMainWindow):
         """根据 Cookie 与 ApiService 状态控制查询按钮是否可用。"""
 
         self._relation_query_available = available
-        if not self._relation_query_running:
+        if (
+            not self._relation_query_running
+            and not self._relation_preparation_running
+        ):
             self.ui.asinQueryButton.setEnabled(available)
 
     def set_relation_query_running(self, running: bool):
         """查询期间只锁定关联查询涉及的输入控件。"""
 
         self._relation_query_running = running
-        self.ui.asinLineEdit.setEnabled(not running)
-        self.month_selector.setEnabled(not running)
+        self.ui.asinLineEdit.setEnabled(
+            not running and not self._relation_preparation_running
+        )
+        self.month_selector.setEnabled(
+            not running and not self._relation_preparation_running
+        )
         self.ui.asinQueryButton.setEnabled(
-            self._relation_query_available and not running
+            self._relation_query_available
+            and not running
+            and not self._relation_preparation_running
         )
         self.ui.asinQueryButton.setText(
             "查询中..." if running else "查询"
@@ -563,6 +640,9 @@ class MainWindow(QMainWindow):
             combo_box = QComboBox(self.ui.relationVariationFilterArea)
             combo_box.setMinimumWidth(110)
             self._sync_relation_filter_control_heights(combo_box)
+            combo_box.setEnabled(
+                not self._relation_preparation_running
+            )
             combo_box.addItem(self._ALL_VARIATION_FILTER_VALUE)
             combo_box.addItems(sorted(values_by_attribute[name]))
             combo_box.currentTextChanged.connect(
@@ -663,6 +743,7 @@ class MainWindow(QMainWindow):
         )
         self.ui.selectVisibleRelationButton.setEnabled(
             bool(visible_asins)
+            and not self._relation_preparation_running
         )
         self.ui.selectedRelationCountLabel.setText(
             f"已选择 {len(self._selected_asins)} / "

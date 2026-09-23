@@ -18,12 +18,20 @@ class SellerSpriteHttpError(ApiServiceError):
     """SellerSprite 返回了非成功 HTTP 状态。"""
 
 
+class SellerSpriteTransientError(ApiServiceError):
+    """SellerSprite 的暂时性网络或服务端错误，可由业务层决定重试。"""
+
+
 class SellerSpriteAuthenticationError(ApiServiceError):
     """SellerSprite 认证失效或要求重新登录。"""
 
 
 class SellerSpriteResponseError(ApiServiceError):
     """SellerSprite 响应无法通过通用结构校验。"""
+
+
+class SellerSpriteBusinessError(ApiServiceError):
+    """SellerSprite 明确返回了业务失败，通常不适合机械重试。"""
 
 
 class ApiService:
@@ -103,6 +111,71 @@ class ApiService:
             },
         )
 
+    async def prewarm_relation_monthly(
+        self,
+        asin: str,
+        month: str,
+        station: str = "COM",
+    ) -> Any:
+        """触发指定 ASIN 与月份的 relation 月度数据预热。"""
+
+        return await self._request(
+            "GET",
+            "/v3/api/relation/ta/monthly",
+            params={
+                "asin": asin,
+                "station": station,
+                "month": month,
+            },
+        )
+
+    async def get_relation_reversing(
+        self,
+        asin: str,
+        month: str,
+        market: str = "COM",
+        limit: int = 100,
+        skip: int = 0,
+    ) -> Any:
+        """获取指定 ASIN 与月份的 relation reversing 单次结果。"""
+
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or limit <= 0
+        ):
+            raise ValueError("limit 必须大于 0")
+
+        if (
+            isinstance(skip, bool)
+            or not isinstance(skip, int)
+            or skip < 0
+        ):
+            raise ValueError("skip 必须为非负整数")
+
+        # 已确认的固定筛选条件集中在该业务方法中，调用方只提供实际会
+        # 变化的 ASIN、月份与分页参数，避免 Controller 重复拼接请求体。
+        return await self._request(
+            "POST",
+            "/v3/api/relation/reversing",
+            params={"market": market},
+            json_body={
+                "asin": asin,
+                "limit": limit,
+                "skip": skip,
+                "month": month,
+                "badges": [],
+                "conversionKeywordTypes": [],
+                "trafficKeywordTypes": [],
+                "order": 12,
+                "desc": True,
+                "exactly": False,
+                "ac": False,
+                "keywordBidMatchType": "exact",
+                "filterDeletedKeywords": False,
+            },
+        )
+
     async def _request(
         self,
         method: Literal["GET", "POST"],
@@ -127,7 +200,7 @@ class ApiService:
         except httpx.HTTPError as exc:
             # 网络、超时和协议错误统一转换为客户端异常，
             # 但不在异常文本中写入 Cookie 等认证信息。
-            raise SellerSpriteHttpError(
+            raise SellerSpriteTransientError(
                 "SellerSprite 请求失败"
             ) from exc
 
@@ -136,6 +209,11 @@ class ApiService:
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            if response.status_code >= 500:
+                raise SellerSpriteTransientError(
+                    "SellerSprite 服务暂时不可用"
+                ) from exc
+
             raise SellerSpriteHttpError(
                 f"SellerSprite HTTP 状态异常：{response.status_code}"
             ) from exc
@@ -166,7 +244,7 @@ class ApiService:
                     f"SellerSprite 认证失效：{message}"
                 )
 
-            raise SellerSpriteResponseError(
+            raise SellerSpriteBusinessError(
                 f"SellerSprite 接口返回错误：{message}"
             )
 

@@ -814,6 +814,9 @@ class MainController(QObject):
         self.window.set_normalization_candidates(
             self._normalization_candidates
         )
+        # 候选已完整生成即可打开非模态审核窗口；不等待历史参考异步查询。
+        if self._normalization_candidates:
+            self.window.show_normalization_review()
         # 候选必须先立即可审核，再异步读取精确 fingerprint 的历史参考。
         self._normalization_history_references = {}
         self.window.set_normalization_history_references({})

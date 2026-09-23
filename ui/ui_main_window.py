@@ -168,6 +168,12 @@ class Ui_MainWindow(object):
 
         self.taskHeaderLayout.addItem(self.taskHeaderHorizontalSpacer)
 
+        self.openNormalizationReviewButton = QPushButton(self.taskHeader)
+        self.openNormalizationReviewButton.setObjectName(u"openNormalizationReviewButton")
+        self.openNormalizationReviewButton.setEnabled(False)
+
+        self.taskHeaderLayout.addWidget(self.openNormalizationReviewButton)
+
         self.refreshButton = QPushButton(self.taskHeader)
         self.refreshButton.setObjectName(u"refreshButton")
 
@@ -393,30 +399,42 @@ class Ui_MainWindow(object):
 
         self.normalizationReviewLayout.addLayout(self.normalizationToolbarLayout)
 
+        self.normalizationStatusLayout = QHBoxLayout()
+        self.normalizationStatusLayout.setSpacing(8)
+        self.normalizationStatusLayout.setObjectName(u"normalizationStatusLayout")
         self.normalizationResultStatusLabel = QLabel(self.normalizationReviewTab)
         self.normalizationResultStatusLabel.setObjectName(u"normalizationResultStatusLabel")
-        self.normalizationResultStatusLabel.setWordWrap(True)
+        sizePolicy1 = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        sizePolicy1.setHorizontalStretch(0)
+        sizePolicy1.setVerticalStretch(0)
+        sizePolicy1.setHeightForWidth(self.normalizationResultStatusLabel.sizePolicy().hasHeightForWidth())
+        self.normalizationResultStatusLabel.setSizePolicy(sizePolicy1)
 
-        self.normalizationReviewLayout.addWidget(self.normalizationResultStatusLabel)
+        self.normalizationStatusLayout.addWidget(self.normalizationResultStatusLabel)
 
-        self.normalizationPersistenceLayout = QHBoxLayout()
-        self.normalizationPersistenceLayout.setObjectName(u"normalizationPersistenceLayout")
+        self.normalizationStatusSeparatorLabel = QLabel(self.normalizationReviewTab)
+        self.normalizationStatusSeparatorLabel.setObjectName(u"normalizationStatusSeparatorLabel")
+
+        self.normalizationStatusLayout.addWidget(self.normalizationStatusSeparatorLabel)
+
         self.normalizationPersistenceStatusLabel = QLabel(self.normalizationReviewTab)
         self.normalizationPersistenceStatusLabel.setObjectName(u"normalizationPersistenceStatusLabel")
+        sizePolicy1.setHeightForWidth(self.normalizationPersistenceStatusLabel.sizePolicy().hasHeightForWidth())
+        self.normalizationPersistenceStatusLabel.setSizePolicy(sizePolicy1)
 
-        self.normalizationPersistenceLayout.addWidget(self.normalizationPersistenceStatusLabel)
+        self.normalizationStatusLayout.addWidget(self.normalizationPersistenceStatusLabel)
 
         self.retryNormalizationPersistenceButton = QToolButton(self.normalizationReviewTab)
         self.retryNormalizationPersistenceButton.setObjectName(u"retryNormalizationPersistenceButton")
 
-        self.normalizationPersistenceLayout.addWidget(self.retryNormalizationPersistenceButton)
+        self.normalizationStatusLayout.addWidget(self.retryNormalizationPersistenceButton)
 
-        self.normalizationPersistenceSpacer = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.normalizationStatusSpacer = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
-        self.normalizationPersistenceLayout.addItem(self.normalizationPersistenceSpacer)
+        self.normalizationStatusLayout.addItem(self.normalizationStatusSpacer)
 
 
-        self.normalizationReviewLayout.addLayout(self.normalizationPersistenceLayout)
+        self.normalizationReviewLayout.addLayout(self.normalizationStatusLayout)
 
         self.normalizationReviewSplitter = QSplitter(self.normalizationReviewTab)
         self.normalizationReviewSplitter.setObjectName(u"normalizationReviewSplitter")
@@ -696,6 +714,7 @@ class Ui_MainWindow(object):
         self.cancelAnalysisButton.setText(QCoreApplication.translate("MainWindow", u"\u53d6\u6d88", None))
         self.currentTaskLabel.setText(QCoreApplication.translate("MainWindow", u"\u5c1a\u672a\u5f00\u59cb\u5206\u6790", None))
         self.recordCountLabel.setText(QCoreApplication.translate("MainWindow", u"0 \u6761\u6570\u636e", None))
+        self.openNormalizationReviewButton.setText(QCoreApplication.translate("MainWindow", u"\u5f52\u4e00\u5ba1\u6838 (0)", None))
         self.refreshButton.setText(QCoreApplication.translate("MainWindow", u"\u5237\u65b0", None))
         self.exportButton.setText(QCoreApplication.translate("MainWindow", u"\u5bfc\u51fa Excel", None))
         self.relationEmptyTitleLabel.setText(QCoreApplication.translate("MainWindow", u"\u6682\u65e0\u5173\u8054 ASIN", None))
@@ -712,8 +731,9 @@ class Ui_MainWindow(object):
         self.normalizationSearchLineEdit.setPlaceholderText(QCoreApplication.translate("MainWindow", u"\u641c\u7d22 canonical \u6216 variant...", None))
         self.normalizationProgressLabel.setText(QCoreApplication.translate("MainWindow", u"\u5f85\u5ba1\u6838 0 / 0", None))
         self.applyNormalizationRulesButton.setText(QCoreApplication.translate("MainWindow", u"\u5e94\u7528\u5df2\u6279\u51c6\u89c4\u5219\u5e76\u91cd\u7b97", None))
-        self.normalizationResultStatusLabel.setText(QCoreApplication.translate("MainWindow", u"\u5c1a\u672a\u751f\u6210\u6b63\u5f0f\u7ed3\u679c", None))
-        self.normalizationPersistenceStatusLabel.setText(QCoreApplication.translate("MainWindow", u"\u5ba1\u6838\u8bb0\u5f55\u5df2\u4fdd\u5b58", None))
+        self.normalizationResultStatusLabel.setText(QCoreApplication.translate("MainWindow", u"\u6b63\u5f0f\u7ed3\u679c\uff1a\u5c1a\u672a\u751f\u6210", None))
+        self.normalizationStatusSeparatorLabel.setText(QCoreApplication.translate("MainWindow", u"|", None))
+        self.normalizationPersistenceStatusLabel.setText(QCoreApplication.translate("MainWindow", u"\u5ba1\u6838\u8bb0\u5f55\uff1a\u5df2\u4fdd\u5b58", None))
         self.retryNormalizationPersistenceButton.setText(QCoreApplication.translate("MainWindow", u"\u91cd\u8bd5\u4fdd\u5b58", None))
         self.normalizationReviewEmptyLabel.setText(QCoreApplication.translate("MainWindow", u"\u5f53\u524d\u5206\u6790\u5c1a\u672a\u751f\u6210\u5f52\u4e00\u5ba1\u6838\u5019\u9009\u3002", None))
         self.normalizationDetailEmptyLabel.setText(QCoreApplication.translate("MainWindow", u"\u4ece\u5de6\u4fa7\u9009\u62e9\u4e00\u4e2a\u5019\u9009\u67e5\u770b\u5ba1\u6838\u8be6\u60c5\u3002", None))
@@ -732,7 +752,7 @@ class Ui_MainWindow(object):
         self.normalizationMatchingTitleLabel.setText(QCoreApplication.translate("MainWindow", u"\u5339\u914d\u641c\u7d22\u8bcd\uff1a", None))
         self.normalizationMatchingValueLabel.setText(QCoreApplication.translate("MainWindow", u"-", None))
         self.normalizationVariantsTitleLabel.setText(QCoreApplication.translate("MainWindow", u"Variant \u72ec\u7acb\u8bc1\u636e", None))
-        self.normalizationConflictsTitleLabel.setText(QCoreApplication.translate("MainWindow", u"\u8de8\u7ec4\u51b2\u7a81", None))
+        self.normalizationConflictsTitleLabel.setText(QCoreApplication.translate("MainWindow", u"\u5173\u8054\u5019\u9009", None))
         self.normalizationHistoryTitleLabel.setText(QCoreApplication.translate("MainWindow", u"\u5386\u53f2\u5ba1\u6838\u53c2\u8003", None))
         self.normalizationHistorySummaryLabel.setText(QCoreApplication.translate("MainWindow", u"\u5386\u53f2\u5ba1\u6838\u8bb0\u5f55\u52a0\u8f7d\u4e2d...", None))
         self.useHistoryCanonicalButton.setText(QCoreApplication.translate("MainWindow", u"\u4f7f\u7528\u5386\u53f2\u6807\u51c6\u8bcd", None))

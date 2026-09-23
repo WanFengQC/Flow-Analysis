@@ -7,6 +7,7 @@ from typing import Any
 from PySide6.QtCore import QEvent, QModelIndex, QTimer, Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QFormLayout,
@@ -199,6 +200,21 @@ class MultiSelectMonthComboBox(QComboBox):
         ]
 
 
+class NormalizationReviewDialog(QDialog):
+    """承载单实例审核界面；关闭时仅隐藏，不清理任何审核内存状态。"""
+
+    def __init__(self, parent: QWidget) -> None:
+        """初始化可缩放、非模态的独立审核窗口。"""
+
+        super().__init__(parent)
+        self.setObjectName("normalizationReviewDialog")
+        self.setWindowTitle("关键词归一审核")
+        self.setModal(False)
+        self.setMinimumSize(900, 600)
+        self.resize(1200, 760)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+
+
 class MainWindow(QMainWindow):
     """Flow Analysis 主窗口，仅负责界面展示、输入读取和状态更新。"""
 
@@ -351,6 +367,8 @@ class MainWindow(QMainWindow):
     def _setup_normalization_review(self) -> None:
         """初始化归一候选审核页面的 View 级筛选、列表与交互。"""
 
+        self._setup_normalization_review_dialog()
+
         self._normalization_list_model = NormalizationCandidateListModel(self)
         self.ui.normalizationCandidateListView.setModel(
             self._normalization_list_model
@@ -398,16 +416,15 @@ class MainWindow(QMainWindow):
             self._show_normalization_history_dialog
         )
 
-        # 快捷键由主窗口接收，但输入焦点在文本框时会主动忽略，避免把用户
-        # 键入的 A/R/S 误解释为审核操作。
+        # 快捷键严格归属 modeless 审核 Dialog；主窗口输入 ASIN 时绝不触发。
         self._normalization_approve_shortcut = QShortcut(
-            QKeySequence("A"), self
+            QKeySequence("A"), self._normalization_review_dialog
         )
         self._normalization_reject_shortcut = QShortcut(
-            QKeySequence("R"), self
+            QKeySequence("R"), self._normalization_review_dialog
         )
         self._normalization_skip_shortcut = QShortcut(
-            QKeySequence("S"), self
+            QKeySequence("S"), self._normalization_review_dialog
         )
         self._normalization_approve_shortcut.activated.connect(
             self._request_normalization_approval_from_shortcut
@@ -427,6 +444,42 @@ class MainWindow(QMainWindow):
         self.set_normalization_persistence_status("CLEAN")
         self.set_analysis_result_mode("未归一预览")
         self.set_normalization_candidates([])
+
+    def _setup_normalization_review_dialog(self) -> None:
+        """将唯一的 Designer 审核页从主 Tab 移入 modeless Dialog。"""
+
+        tab_index = self.ui.resultTabWidget.indexOf(
+            self.ui.normalizationReviewTab
+        )
+        if tab_index >= 0:
+            self.ui.resultTabWidget.removeTab(tab_index)
+
+        self._normalization_review_dialog = NormalizationReviewDialog(self)
+        dialog_layout = QVBoxLayout(self._normalization_review_dialog)
+        dialog_layout.setContentsMargins(0, 0, 0, 0)
+        dialog_layout.addWidget(self.ui.normalizationReviewTab)
+
+        # Splitter 是唯一可伸缩区域；紧凑状态行移动到 Dialog 底部。
+        review_layout = self.ui.normalizationReviewLayout
+        status_item = review_layout.takeAt(1)
+        if status_item is not None:
+            review_layout.addItem(status_item)
+        review_layout.setStretch(0, 0)
+        review_layout.setStretch(1, 1)
+        review_layout.setStretch(2, 0)
+
+        self.ui.openNormalizationReviewButton.clicked.connect(
+            self.show_normalization_review
+        )
+
+    def show_normalization_review(self) -> None:
+        """显示同一个审核 Dialog；没有候选时不打开空审核窗口。"""
+
+        if not self._normalization_candidates:
+            return
+        self._normalization_review_dialog.show()
+        self._normalization_review_dialog.raise_()
+        self._normalization_review_dialog.activateWindow()
 
     def _populate_normalization_filter_controls(self) -> None:
         """填充审核页固定筛选项，内部值始终保持正式 reason/decision 字符串。"""
@@ -463,7 +516,7 @@ class MainWindow(QMainWindow):
         self.ui.normalizationHistoryComboBox.addItem("全部历史", None)
         self.ui.normalizationHistoryComboBox.addItem("无历史", "NONE")
         self.ui.normalizationHistoryComboBox.addItem("有历史", "HAS_HISTORY")
-        self.ui.normalizationHistoryComboBox.addItem("历史冲突", "CONFLICT")
+        self.ui.normalizationHistoryComboBox.addItem("历史结论有变化", "CONFLICT")
 
         self.ui.normalizationSortComboBox.addItem("影响程度", "impact")
         self.ui.normalizationSortComboBox.addItem("频次", "frequency")
@@ -515,12 +568,11 @@ class MainWindow(QMainWindow):
             self._build_normalization_conflict_index()
         )
         self._expanded_normalization_evidence.clear()
-        tab_index = self.ui.resultTabWidget.indexOf(
-            self.ui.normalizationReviewTab
+        self.ui.openNormalizationReviewButton.setText(
+            f"归一审核 ({len(self._normalization_candidates)})"
         )
-        self.ui.resultTabWidget.setTabText(
-            tab_index,
-            f"归一审核 ({len(self._normalization_candidates)})",
+        self.ui.openNormalizationReviewButton.setEnabled(
+            bool(self._normalization_candidates)
         )
         self._normalization_current_candidate_id = None
         self._normalization_next_candidate_id = None
@@ -529,6 +581,8 @@ class MainWindow(QMainWindow):
             and bool(self._normalization_candidates)
         )
         self._refresh_normalization_review()
+        if not self._normalization_candidates:
+            self._normalization_review_dialog.hide()
 
     def update_normalization_candidate(
         self,
@@ -863,9 +917,9 @@ class MainWindow(QMainWindow):
                 and isinstance(item.get("canonical"), str)
             )
             if canonical_text:
-                summary_lines.append(f"历史 canonical：{canonical_text}")
+                summary_lines.append(f"历史标准词：{canonical_text}")
         if reference.get("hasDecisionConflict") or reference.get("hasCanonicalConflict"):
-            summary_lines.append("⚠ 历史审核存在不同结论")
+            summary_lines.append("⚠ 历史结论有变化")
         self.ui.normalizationHistorySummaryLabel.setText("\n".join(summary_lines))
         can_use_canonical = bool(reference.get("latestApprovedCanonical"))
         self.ui.useHistoryCanonicalButton.setEnabled(can_use_canonical)
@@ -1080,7 +1134,7 @@ class MainWindow(QMainWindow):
             return
 
         layout.addWidget(
-            QLabel(f"⚠ 存在 {len(conflicts)} 个其他候选关联；点击可直接查看。")
+            QLabel(f"存在 {len(conflicts)} 个关联候选；点击可直接查看。")
         )
         for conflict in conflicts:
             button = QToolButton(self.ui.normalizationConflictContainer)
@@ -1215,7 +1269,13 @@ class MainWindow(QMainWindow):
     def set_normalization_result_status(self, status: str) -> None:
         """展示 Controller 判定的正式结果状态，不在 View 推导业务状态。"""
 
-        self.ui.normalizationResultStatusLabel.setText(status)
+        presentation = {
+            "尚未生成正式结果": "正式结果：尚未生成",
+            "正在按已批准规则重算...": "正式结果：正在重新计算...",
+        }
+        self.ui.normalizationResultStatusLabel.setText(
+            presentation.get(status, f"正式结果：{status}")
+        )
 
     def set_analysis_result_mode(self, mode: str) -> None:
         """在数据页标明当前表格应被解释为预览、正式或旧版正式结果。"""
@@ -1226,13 +1286,13 @@ class MainWindow(QMainWindow):
         """展示 Controller 提供的审核持久化状态，并仅在失败/未保存时开放重试。"""
 
         presentation = {
-            "CLEAN": "审核记录已保存",
-            "SAVING": "正在保存审核记录...",
-            "UNSAVED": "有未保存的审核记录",
-            "SAVE_FAILED": "审核记录保存失败，可重试",
+            "CLEAN": "审核记录：已保存",
+            "SAVING": "审核记录：正在保存...",
+            "UNSAVED": "审核记录：有未保存内容",
+            "SAVE_FAILED": "审核记录：保存失败，可重试",
         }
         self.ui.normalizationPersistenceStatusLabel.setText(
-            presentation.get(status, "审核记录状态未知")
+            presentation.get(status, "审核记录：状态未知")
         )
         self.ui.retryNormalizationPersistenceButton.setVisible(
             status in {"UNSAVED", "SAVE_FAILED"}
@@ -1307,7 +1367,12 @@ class MainWindow(QMainWindow):
     def _normalization_input_has_focus(self) -> bool:
         """确保 A/R/S 在搜索或 canonical 输入时不会污染人工输入。"""
 
-        return isinstance(self.focusWidget(), type(self.ui.asinLineEdit))
+        focus_widget = (
+            QApplication.focusWidget()
+            or self._normalization_review_dialog.focusWidget()
+            or self.focusWidget()
+        )
+        return isinstance(focus_widget, type(self.ui.asinLineEdit))
 
     @staticmethod
     def _normalization_reason_name(reason_type: str) -> str:

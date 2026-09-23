@@ -299,6 +299,16 @@
             </spacer>
            </item>
            <item>
+            <widget class="QPushButton" name="openNormalizationReviewButton">
+             <property name="enabled">
+              <bool>false</bool>
+             </property>
+             <property name="text">
+              <string>归一审核 (0)</string>
+             </property>
+            </widget>
+           </item>
+           <item>
             <widget class="QPushButton" name="refreshButton">
              <property name="text">
               <string>刷新</string>
@@ -739,21 +749,36 @@
              </layout>
             </item>
             <item>
-             <widget class="QLabel" name="normalizationResultStatusLabel">
-              <property name="text">
-               <string>尚未生成正式结果</string>
+             <layout class="QHBoxLayout" name="normalizationStatusLayout">
+              <property name="spacing">
+               <number>8</number>
               </property>
-              <property name="wordWrap">
-               <bool>true</bool>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <layout class="QHBoxLayout" name="normalizationPersistenceLayout">
+              <item>
+               <widget class="QLabel" name="normalizationResultStatusLabel">
+                <property name="text">
+                 <string>正式结果：尚未生成</string>
+                </property>
+                <property name="sizePolicy">
+                 <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+                  <horstretch>0</horstretch>
+                  <verstretch>0</verstretch>
+                 </sizepolicy>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QLabel" name="normalizationStatusSeparatorLabel">
+                <property name="text"><string>|</string></property>
+               </widget>
+              </item>
               <item>
                <widget class="QLabel" name="normalizationPersistenceStatusLabel">
-                <property name="text">
-                 <string>审核记录已保存</string>
+                <property name="text"><string>审核记录：已保存</string></property>
+                <property name="sizePolicy">
+                 <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+                  <horstretch>0</horstretch>
+                  <verstretch>0</verstretch>
+                 </sizepolicy>
                 </property>
                </widget>
               </item>
@@ -765,7 +790,7 @@
                </widget>
               </item>
               <item>
-               <spacer name="normalizationPersistenceSpacer">
+               <spacer name="normalizationStatusSpacer">
                 <property name="orientation">
                  <enum>Qt::Orientation::Horizontal</enum>
                 </property>
@@ -963,7 +988,7 @@
                          </widget>
                         </item>
                         <item>
-                         <widget class="QLabel" name="normalizationConflictsTitleLabel"><property name="text"><string>跨组冲突</string></property></widget>
+                         <widget class="QLabel" name="normalizationConflictsTitleLabel"><property name="text"><string>关联候选</string></property></widget>
                         </item>
                         <item>
                          <widget class="QWidget" name="normalizationConflictContainer">

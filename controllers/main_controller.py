@@ -62,6 +62,7 @@ from models.tagging_label import (
 from repositories.normalization_review_repository import (
     NormalizationReviewRepository,
 )
+from repositories.database import DatabaseManager
 from services.ai_service import AiServiceConfigurationError
 from services.amazon_product_context_provider import (
     AmazonProductContextProvider,
@@ -179,6 +180,11 @@ class MainController(QObject):
         self.word_filter_service = WordFilterService()
         self.normalization_rule_service = NormalizationRuleService()
         database = getattr(runtime, "database", None)
+        # 管理窗口只允许绑定实际 DatabaseManager。旧单元测试运行时会放置
+        # 哨兵对象以明确“不接触 PostgreSQL”，不能因此误走管理规则加载链。
+        management_database = (
+            database if isinstance(database, DatabaseManager) else None
+        )
         self.normalization_review_service = (
             NormalizationReviewService(
                 NormalizationReviewRepository(database)
@@ -188,15 +194,15 @@ class MainController(QObject):
         )
         self.normalization_management_service = (
             NormalizationManagementService(
-                database,
+                management_database,
                 self.normalization_rule_service,
             )
-            if database is not None
+            if management_database is not None
             else None
         )
         self.tagging_management_service = (
-            TaggingLabelManagementService(database)
-            if database is not None
+            TaggingLabelManagementService(management_database)
+            if management_database is not None
             else None
         )
         # 人工标签保存复用既有正式写入入口；这里不触发产品资料读取或 AI

@@ -194,15 +194,45 @@ class NormalizationActiveRuleRepository(BaseRepository):
         *,
         limit: int = 100,
     ) -> list[NormalizationActiveRuleAuditRecord]:
-        """读取规则管理历史，UI 只展示不可变快照。"""
+        """读取规则整条版本链的管理历史，UI 只展示不可变快照。"""
 
         if limit <= 0:
             raise ValueError("limit 必须大于 0")
         sql = """
-            SELECT *
-            FROM normalization_active_rule_audits
-            WHERE rule_id = %(rule_id)s
-            ORDER BY created_at DESC, id DESC
+            WITH RECURSIVE ancestors AS (
+                SELECT id, supersedes_rule_id
+                FROM normalization_active_rules
+                WHERE id = %(rule_id)s
+
+                UNION ALL
+
+                SELECT parent.id, parent.supersedes_rule_id
+                FROM normalization_active_rules AS parent
+                INNER JOIN ancestors AS child
+                    ON child.supersedes_rule_id = parent.id
+            ),
+            root_rule AS (
+                SELECT id
+                FROM ancestors
+                WHERE supersedes_rule_id IS NULL
+                LIMIT 1
+            ),
+            version_chain AS (
+                SELECT id
+                FROM root_rule
+
+                UNION ALL
+
+                SELECT child.id
+                FROM normalization_active_rules AS child
+                INNER JOIN version_chain AS parent
+                    ON child.supersedes_rule_id = parent.id
+            )
+            SELECT audit.*
+            FROM normalization_active_rule_audits AS audit
+            INNER JOIN version_chain
+                ON version_chain.id = audit.rule_id
+            ORDER BY audit.created_at DESC, audit.id DESC
             LIMIT %(limit)s
         """
         async with self.connection_scope() as connection:

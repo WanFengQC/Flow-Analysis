@@ -23,6 +23,8 @@ class TaggingLabelRepository(BaseRepository):
         category_key: TaggingCategoryKey,
         taxonomy_version: int,
         words: Sequence[str],
+        *,
+        include_inactive: bool = False,
     ) -> dict[str, TaggingLabelCacheRecord]:
         """以一次查询加载一个品类、版本下的全部当前缓存，避免 N+1。"""
 
@@ -30,12 +32,14 @@ class TaggingLabelRepository(BaseRepository):
         if not normalized_words:
             return {}
 
-        sql = """
+        active_clause = "" if include_inactive else "AND is_active = TRUE"
+        sql = f"""
             SELECT *
             FROM tagging_label_consensus
             WHERE category_key = %(category_key)s
               AND taxonomy_version = %(taxonomy_version)s
               AND word = ANY(%(words)s)
+              {active_clause}
         """
         async with self.connection_scope() as connection:
             async with connection.cursor() as cursor:
@@ -56,11 +60,24 @@ class TaggingLabelRepository(BaseRepository):
             for record in (self._cache_record_from_row(row),)
         }
 
-    async def upsert_current(
+    async def insert_if_cache_miss(
         self,
         record: TaggingLabelCacheRecord,
-    ) -> TaggingLabelCacheRecord:
-        """原子更新 current cache；唯一键冲突时保留同一行 identity。"""
+        *,
+        expected_inactive_revision: int | None = None,
+    ) -> TaggingLabelCacheRecord | None:
+        """仅在本轮读取时确实不存在 identity 时写入 AI/审核结论。
+
+        管理窗口在 AI 请求期间创建、修改或逻辑删除同一 identity 时，唯一键
+        冲突会返回 ``None``。调用方必须放弃该迟到结果，且绝不能追加 AI
+        “已采用”审计；因此不会覆盖人工决定或复活逻辑删除缓存。
+        """
+
+        if expected_inactive_revision is not None:
+            return await self._reactivate_after_known_cache_miss(
+                record,
+                expected_inactive_revision,
+            )
 
         sql = """
             INSERT INTO tagging_label_consensus (
@@ -72,7 +89,10 @@ class TaggingLabelRepository(BaseRepository):
                 reason,
                 decision_source,
                 representative_asin,
-                product_context_source
+                product_context_source,
+                revision,
+                is_active,
+                invalidated_at
             )
             VALUES (
                 %(id)s,
@@ -83,16 +103,13 @@ class TaggingLabelRepository(BaseRepository):
                 %(reason)s,
                 %(decision_source)s,
                 %(representative_asin)s,
-                %(product_context_source)s
+                %(product_context_source)s,
+                %(revision)s,
+                %(is_active)s,
+                %(invalidated_at)s
             )
             ON CONFLICT (category_key, word, taxonomy_version)
-            DO UPDATE SET
-                label = EXCLUDED.label,
-                reason = EXCLUDED.reason,
-                decision_source = EXCLUDED.decision_source,
-                representative_asin = EXCLUDED.representative_asin,
-                product_context_source = EXCLUDED.product_context_source,
-                updated_at = CURRENT_TIMESTAMP
+            DO NOTHING
             RETURNING *
         """
         async with self.connection_scope() as connection:
@@ -100,9 +117,52 @@ class TaggingLabelRepository(BaseRepository):
                 await cursor.execute(sql, self._cache_parameters(record))
                 row = await cursor.fetchone()
 
-        if not isinstance(row, Mapping):
-            raise RuntimeError("标签缓存写入后未返回记录")
-        return self._cache_record_from_row(row)
+        return self._cache_record_from_row(row) if isinstance(row, Mapping) else None
+
+    async def _reactivate_after_known_cache_miss(
+        self,
+        record: TaggingLabelCacheRecord,
+        expected_inactive_revision: int,
+    ) -> TaggingLabelCacheRecord | None:
+        """仅允许新请求按其读到的失效 revision 重建缓存。
+
+        若删除发生在 AI 发起后，或用户后来手工写入，revision/is_active 条件
+        都不再匹配，迟到结果只能安全丢弃。
+        """
+
+        sql = """
+            UPDATE tagging_label_consensus
+            SET label = %(label)s,
+                reason = %(reason)s,
+                decision_source = %(decision_source)s,
+                representative_asin = %(representative_asin)s,
+                product_context_source = %(product_context_source)s,
+                is_active = TRUE,
+                invalidated_at = NULL,
+                revision = revision + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE category_key = %(category_key)s
+              AND word = %(word)s
+              AND taxonomy_version = %(taxonomy_version)s
+              AND is_active = FALSE
+              AND revision = %(expected_inactive_revision)s
+            RETURNING *
+        """
+        parameters = self._cache_parameters(record)
+        parameters["expected_inactive_revision"] = expected_inactive_revision
+        async with self.connection_scope() as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(sql, parameters)
+                row = await cursor.fetchone()
+        return self._cache_record_from_row(row) if isinstance(row, Mapping) else None
+
+    async def upsert_current(
+        self,
+        record: TaggingLabelCacheRecord,
+    ) -> TaggingLabelCacheRecord | None:
+        """兼容旧调用名，但不再允许无条件覆盖人工当前缓存。"""
+
+        return await self.insert_if_cache_miss(record)
 
     async def append_decision(
         self,
@@ -162,6 +222,9 @@ class TaggingLabelRepository(BaseRepository):
             "decision_source": record.decision_source.value,
             "representative_asin": record.representative_asin,
             "product_context_source": record.product_context_source,
+            "revision": record.revision,
+            "is_active": record.is_active,
+            "invalidated_at": record.invalidated_at,
         }
 
     @staticmethod
@@ -194,8 +257,19 @@ class TaggingLabelRepository(BaseRepository):
             label=TagLabel(row["label"]),
             reason=str(row["reason"]) if row.get("reason") is not None else None,
             decision_source=TaggingDecisionSource(row["decision_source"]),
-            representative_asin=str(row["representative_asin"]),
-            product_context_source=str(row["product_context_source"]),
+            representative_asin=(
+                str(row["representative_asin"])
+                if row.get("representative_asin") is not None
+                else None
+            ),
+            product_context_source=(
+                str(row["product_context_source"])
+                if row.get("product_context_source") is not None
+                else None
+            ),
+            revision=int(row.get("revision", 1)),
+            is_active=bool(row.get("is_active", True)),
+            invalidated_at=row.get("invalidated_at"),
             created_at=row.get("created_at"),
             updated_at=row.get("updated_at"),
         )
@@ -219,8 +293,16 @@ class TaggingLabelRepository(BaseRepository):
             label=TagLabel(row["label"]),
             reason=str(row["reason"]) if row.get("reason") is not None else None,
             decision_source=TaggingDecisionSource(row["decision_source"]),
-            representative_asin=str(row["representative_asin"]),
-            product_context_source=str(row["product_context_source"]),
+            representative_asin=(
+                str(row["representative_asin"])
+                if row.get("representative_asin") is not None
+                else None
+            ),
+            product_context_source=(
+                str(row["product_context_source"])
+                if row.get("product_context_source") is not None
+                else None
+            ),
             provider_results={
                 str(provider_id): dict(provider_result)
                 for provider_id, provider_result in provider_results.items()

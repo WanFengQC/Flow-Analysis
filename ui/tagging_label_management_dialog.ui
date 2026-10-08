@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>TaggingLabelManagementDialog</class>
+ <widget class="QDialog" name="TaggingLabelManagementDialog">
+  <property name="windowTitle"><string>标签管理</string></property>
+  <property name="modal"><bool>false</bool></property>
+  <layout class="QVBoxLayout" name="taggingManagementRootLayout">
+   <property name="leftMargin"><number>14</number></property><property name="topMargin"><number>14</number></property><property name="rightMargin"><number>14</number></property><property name="bottomMargin"><number>14</number></property>
+   <item><layout class="QHBoxLayout" name="taggingManagementFilterLayout">
+    <item><widget class="QLineEdit" name="searchLineEdit"><property name="minimumSize"><size><width>220</width><height>32</height></size></property><property name="placeholderText"><string>搜索标准词</string></property><property name="clearButtonEnabled"><bool>true</bool></property></widget></item>
+    <item><widget class="QComboBox" name="categoryComboBox"><property name="minimumSize"><size><width>130</width><height>32</height></size></property></widget></item>
+    <item><widget class="QComboBox" name="labelComboBox"><property name="minimumSize"><size><width>130</width><height>32</height></size></property></widget></item>
+    <item><widget class="QComboBox" name="sourceComboBox"><property name="minimumSize"><size><width>150</width><height>32</height></size></property></widget></item>
+    <item><widget class="QPushButton" name="refreshButton"><property name="text"><string>刷新</string></property></widget></item>
+    <item><spacer name="taggingManagementFilterSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+    <item><widget class="QLabel" name="countLabel"><property name="text"><string>当前有效标签：0</string></property></widget></item>
+   </layout></item>
+   <item><widget class="QTableView" name="labelsTableView"><property name="alternatingRowColors"><bool>true</bool></property><property name="selectionBehavior"><enum>QAbstractItemView::SelectRows</enum></property><property name="selectionMode"><enum>QAbstractItemView::SingleSelection</enum></property><property name="sortingEnabled"><bool>false</bool></property></widget></item>
+   <item><layout class="QHBoxLayout" name="taggingManagementFooterLayout">
+    <item><widget class="QPushButton" name="addButton"><property name="text"><string>新增标签</string></property></widget></item>
+    <item><widget class="QPushButton" name="editButton"><property name="text"><string>编辑</string></property></widget></item>
+    <item><widget class="QPushButton" name="deleteButton"><property name="text"><string>删除</string></property></widget></item>
+    <item><widget class="QPushButton" name="historyButton"><property name="text"><string>查看历史</string></property></widget></item>
+    <item><spacer name="taggingManagementFooterSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+    <item><widget class="QPushButton" name="previousPageButton"><property name="text"><string>上一页</string></property></widget></item>
+    <item><widget class="QLabel" name="pageLabel"><property name="text"><string>第 1 页</string></property></widget></item>
+    <item><widget class="QPushButton" name="nextPageButton"><property name="text"><string>下一页</string></property></widget></item>
+   </layout></item>
+  </layout>
+ </widget>
+ <resources/><connections/>
+</ui>

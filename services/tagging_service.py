@@ -109,12 +109,34 @@ class TaggingService:
         if not work_items:
             return TaggingPipelineRun(results=(), review_items=())
 
-        # 本轮所有正式 canonical word 一次查询；month 不属于 cache identity。
-        cache_by_word = await self._repository_for(None).list_by_words(
-            stable_category_key,
-            taxonomy_version,
-            tuple(item.word for item in work_items),
-        )
+        # 本轮所有正式 canonical word 一次读取 current cache，同时保留失效
+        # identity 的 revision。后者只用作迟到 AI 的条件写入保护，不算命中。
+        repository = self._repository_for(None)
+        words = tuple(item.word for item in work_items)
+        try:
+            identities_by_word = await repository.list_by_words(
+                stable_category_key,
+                taxonomy_version,
+                words,
+                include_inactive=True,
+            )
+        except TypeError:
+            # 兼容旧的本地测试替身；正式 Repository 始终支持失效版本读取。
+            identities_by_word = await repository.list_by_words(
+                stable_category_key,
+                taxonomy_version,
+                words,
+            )
+        cache_by_word = {
+            word: record
+            for word, record in identities_by_word.items()
+            if record.is_active
+        }
+        cache_miss_revisions = {
+            word: record.revision
+            for word, record in identities_by_word.items()
+            if not record.is_active
+        }
 
         results_by_identity: dict[tuple[str, str], TaggingPipelineResult] = {}
         misses_by_word: dict[str, list[_WordWorkItem]] = defaultdict(list)
@@ -166,6 +188,7 @@ class TaggingService:
 
         ai_inputs: list[TaggingInput] = []
         input_groups: dict[str, list[_WordWorkItem]] = {}
+        input_miss_revisions: dict[str, int | None] = {}
         for word, grouped_items in misses_by_word.items():
             input_item = self._build_ai_input(
                 grouped_items[0],
@@ -186,6 +209,7 @@ class TaggingService:
                 continue
             ai_inputs.append(input_item)
             input_groups[input_item.item_id] = grouped_items
+            input_miss_revisions[input_item.item_id] = cache_miss_revisions.get(word)
 
         review_items: list[TaggingReviewItem] = []
         if ai_inputs:
@@ -208,6 +232,7 @@ class TaggingService:
                     results_by_identity,
                     review_items,
                     input_item,
+                    input_miss_revisions.get(input_item.item_id),
                 )
 
         self._report_progress(progress_callback, "正在处理共识结果...")
@@ -343,7 +368,7 @@ class TaggingService:
                 or consensus_result.consensus_reason is None
             ):
                 raise RuntimeError("CONSENSUS 缺少正式标签或理由")
-            await self._persist_formal_decision(
+            persisted_record = await self._persist_formal_decision(
                 category_key=template.category_key,
                 word=template.word,
                 taxonomy_version=template.taxonomy_version,
@@ -353,7 +378,36 @@ class TaggingService:
                 representative_asin=tagging_input.representative_asin,
                 product_context_source=tagging_input.product_context_source,
                 provider_results=self._provider_audit_snapshot(consensus_result),
+                expected_inactive_revision=template.cache_miss_revision,
             )
+            if persisted_record is None:
+                current_cache = await self._repository_for(None).list_by_words(
+                    template.category_key,
+                    template.taxonomy_version,
+                    (template.word,),
+                )
+                current_record = current_cache.get(template.word)
+                if current_record is not None:
+                    return [
+                        replace(
+                            result,
+                            status=TaggingPipelineStatus.CACHE_HIT,
+                            label=current_record.label,
+                            reason=current_record.reason,
+                            decision_source=current_record.decision_source,
+                        )
+                        for result in previous_results
+                    ]
+                return [
+                    replace(
+                        result,
+                        status=TaggingPipelineStatus.INCOMPLETE,
+                        label=None,
+                        reason=None,
+                        decision_source=None,
+                    )
+                    for result in previous_results
+                ]
             return [
                 replace(
                     result,
@@ -457,7 +511,7 @@ class TaggingService:
             representative_asin,
             product_context_source,
         )
-        return await self._persist_formal_decision(
+        saved = await self._persist_formal_decision(
             category_key=stable_category_key,
             word=normalized_word,
             taxonomy_version=taxonomy_version,
@@ -468,6 +522,9 @@ class TaggingService:
             product_context_source=product_context_source.strip(),
             provider_results={},
         )
+        if saved is None:
+            raise RuntimeError("标签缓存已被管理操作变更，请刷新后重新审核")
+        return saved
 
     async def _apply_consensus_result(
         self,
@@ -478,6 +535,7 @@ class TaggingService:
         results_by_identity: dict[tuple[str, str], TaggingPipelineResult],
         review_items: list[TaggingReviewItem],
         tagging_input: TaggingInput,
+        cache_miss_revision: int | None,
     ) -> None:
         """将共识、分歧和不完整结果严格走向不同生命周期。"""
 
@@ -487,7 +545,7 @@ class TaggingService:
                 or consensus_result.consensus_reason is None
             ):
                 raise RuntimeError("CONSENSUS 缺少正式标签或理由")
-            await self._persist_formal_decision(
+            persisted_record = await self._persist_formal_decision(
                 category_key=category_key,
                 word=grouped_items[0].word,
                 taxonomy_version=taxonomy_version,
@@ -497,7 +555,17 @@ class TaggingService:
                 representative_asin=tagging_input.representative_asin,
                 product_context_source=tagging_input.product_context_source,
                 provider_results=self._provider_audit_snapshot(consensus_result),
+                expected_inactive_revision=cache_miss_revision,
             )
+            if persisted_record is None:
+                await self._apply_late_write_conflict(
+                    grouped_items,
+                    category_key,
+                    taxonomy_version,
+                    results_by_identity,
+                    tagging_input,
+                )
+                return
             for item in grouped_items:
                 results_by_identity[(item.month, item.word)] = (
                     TaggingPipelineResult(
@@ -509,6 +577,7 @@ class TaggingService:
                         label=consensus_result.consensus_label,
                         reason=consensus_result.consensus_reason,
                         decision_source=TaggingDecisionSource.AI_CONSENSUS,
+                        cache_miss_revision=cache_miss_revision,
                         provider_results=dict(consensus_result.provider_results),
                         tagging_input=tagging_input,
                     )
@@ -527,6 +596,7 @@ class TaggingService:
                         label=None,
                         reason=None,
                         decision_source=None,
+                        cache_miss_revision=cache_miss_revision,
                         provider_results=dict(consensus_result.provider_results),
                         tagging_input=tagging_input,
                     )
@@ -550,11 +620,49 @@ class TaggingService:
                         taxonomy_version,
                         provider_results=consensus_result.provider_results,
                         tagging_input=tagging_input,
+                        cache_miss_revision=cache_miss_revision,
                     )
                 )
             return
 
         raise RuntimeError("未知 Tagging 共识状态")
+
+    async def _apply_late_write_conflict(
+        self,
+        grouped_items: Sequence[_WordWorkItem],
+        category_key: TaggingCategoryKey,
+        taxonomy_version: int,
+        results_by_identity: dict[tuple[str, str], TaggingPipelineResult],
+        tagging_input: TaggingInput,
+    ) -> None:
+        """迟到 AI 写入冲突时使用人工当前值，或明确保留为未完成。
+
+        逻辑删除后没有 active cache，因此不能把已得到的 AI 标签伪装成正式
+        结论；下次任务会以新的 CACHE_MISS 重新请求。
+        """
+
+        word = grouped_items[0].word
+        cache_by_word = await self._repository_for(None).list_by_words(
+            category_key,
+            taxonomy_version,
+            (word,),
+        )
+        current_record = cache_by_word.get(word)
+        for item in grouped_items:
+            if current_record is not None:
+                results_by_identity[(item.month, item.word)] = self._cache_hit_result(
+                    item,
+                    category_key,
+                    taxonomy_version,
+                    current_record,
+                )
+            else:
+                results_by_identity[(item.month, item.word)] = self._incomplete_result(
+                    item,
+                    category_key,
+                    taxonomy_version,
+                    tagging_input=tagging_input,
+                )
 
     def _build_ai_input(
         self,
@@ -639,8 +747,13 @@ class TaggingService:
         representative_asin: str,
         product_context_source: str,
         provider_results: Mapping[str, Mapping[str, Any]],
-    ) -> TaggingLabelCacheRecord:
-        """同一事务更新 current cache 并追加审计，避免出现半成品正式决定。"""
+        expected_inactive_revision: int | None = None,
+    ) -> TaggingLabelCacheRecord | None:
+        """仅在发起 AI/审核时仍为 miss 的前提下写入正式决定。
+
+        管理页若在等待期间创建、修改或删除相同 identity，Repository 会以
+        ``None`` 返回。这里绝不追加错误的“已采用”审计，也不覆盖人工标签。
+        """
 
         self._validate_formal_label_fields(
             label,
@@ -661,9 +774,23 @@ class TaggingService:
                 representative_asin=representative_asin.strip().upper(),
                 product_context_source=product_context_source.strip(),
             )
-            current_cache_record = await repository.upsert_current(
-                requested_cache_record
+            insert_if_cache_miss = getattr(
+                repository,
+                "insert_if_cache_miss",
+                None,
             )
+            if callable(insert_if_cache_miss):
+                current_cache_record = await insert_if_cache_miss(
+                    requested_cache_record,
+                    expected_inactive_revision=expected_inactive_revision,
+                )
+            else:
+                # 兼容未升级的内存测试替身；生产 Repository 必须提供条件插入。
+                current_cache_record = await repository.upsert_current(
+                    requested_cache_record
+                )
+            if current_cache_record is None:
+                return None
             await repository.append_decision(
                 TaggingLabelDecisionRecord(
                     id=uuid4(),
@@ -782,6 +909,7 @@ class TaggingService:
         *,
         provider_results: Mapping[str, ProviderTaggingOutcome] | None = None,
         tagging_input: TaggingInput | None = None,
+        cache_miss_revision: int | None = None,
     ) -> TaggingPipelineResult:
         """未得到三方完整合法结论时只保留运行时失败状态。"""
 
@@ -794,6 +922,7 @@ class TaggingService:
             label=None,
             reason=None,
             decision_source=None,
+            cache_miss_revision=cache_miss_revision,
             provider_results=dict(provider_results or {}),
             tagging_input=tagging_input,
         )

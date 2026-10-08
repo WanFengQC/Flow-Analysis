@@ -25,6 +25,8 @@ class TaggingDecisionSource(StrEnum):
     # Hunter 的历史共识表混合保存了 AI 共识与人工确认，但没有逐条来源字段。
     # 导入时必须保留这一事实，不能伪造成当前项目新产生的任一来源。
     HISTORICAL_IMPORT = "HISTORICAL_IMPORT"
+    # 管理窗口明确人工维护的缓存，不得伪装成 AI 或审核窗口结论。
+    MANUAL_MANAGEMENT = "MANUAL_MANAGEMENT"
 
 
 class TaggingPipelineStatus(StrEnum):
@@ -91,8 +93,12 @@ class TaggingLabelCacheRecord:
     label: TagLabel
     reason: str | None
     decision_source: TaggingDecisionSource
-    representative_asin: str
-    product_context_source: str
+    # 纯人工管理记录可以不关联本轮 AI 的代表 ASIN 或产品背景。
+    representative_asin: str | None
+    product_context_source: str | None
+    revision: int = 1
+    is_active: bool = True
+    invalidated_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -109,8 +115,8 @@ class TaggingLabelDecisionRecord:
     label: TagLabel
     reason: str | None
     decision_source: TaggingDecisionSource
-    representative_asin: str
-    product_context_source: str
+    representative_asin: str | None
+    product_context_source: str | None
     provider_results: Mapping[str, Mapping[str, Any]]
     created_at: datetime | None = None
 
@@ -148,6 +154,9 @@ class TaggingPipelineResult:
     label: TagLabel | None
     reason: str | None
     decision_source: TaggingDecisionSource | None
+    # AI 请求开始时读取到的逻辑删除缓存版本。None 表示当时从未存在该
+    # identity；用于阻止迟到 AI 复活已删除/已人工改写的缓存。
+    cache_miss_revision: int | None = None
     provider_results: Mapping[str, ProviderTaggingOutcome] = field(
         default_factory=dict
     )

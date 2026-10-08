@@ -44,6 +44,12 @@ from views.normalization_candidate_list_model import (
 )
 from views.tagging_review_dialog import TaggingReviewDialog
 from views.final_analysis_table_model import FinalAnalysisTableModel
+from views.normalization_management_dialog import (
+    NormalizationManagementDialog,
+)
+from views.tagging_label_management_dialog import (
+    TaggingLabelManagementDialog,
+)
 
 
 class MultiSelectMonthComboBox(QComboBox):
@@ -255,6 +261,17 @@ class MainWindow(QMainWindow):
     tagging_human_review_requested = Signal(str, str, str)
     tagging_review_close_requested = Signal()
     tagging_review_discard_requested = Signal()
+    # 两个持久化管理窗口只转发明确用户操作；Controller 负责所有异步数据库调用。
+    normalization_management_refresh_requested = Signal(str, object, int)
+    normalization_management_create_requested = Signal(str, object, str)
+    normalization_management_update_requested = Signal(object, int, str, object, str)
+    normalization_management_revoke_requested = Signal(object, int)
+    normalization_management_history_requested = Signal(object)
+    tagging_management_refresh_requested = Signal(object, object, object, str, int)
+    tagging_management_create_requested = Signal(str, str, str, str)
+    tagging_management_update_requested = Signal(object, int, str, str)
+    tagging_management_delete_requested = Signal(object, int)
+    tagging_management_history_requested = Signal(object)
     _ALL_VARIATION_FILTER_VALUE = "全部"
 
     def __init__(self):
@@ -318,6 +335,7 @@ class MainWindow(QMainWindow):
         self._setup_word_filter()
         self._setup_normalization_review()
         self._setup_tagging_review()
+        self._setup_management_dialogs()
 
     def _setup_month_selector(self):
         """创建多选时间范围控件，提供最近30天及截至上月的自然月。"""
@@ -648,6 +666,84 @@ class MainWindow(QMainWindow):
         self._tagging_review_dialog.close_requested.connect(
             self.tagging_review_close_requested.emit
         )
+
+    def _setup_management_dialogs(self) -> None:
+        """复用既有菜单动作打开持久化管理窗口，不改动主界面布局。"""
+
+        self._normalization_management_dialog = NormalizationManagementDialog(self)
+        self._tagging_management_dialog = TaggingLabelManagementDialog(self)
+        self.ui.action_4.triggered.connect(self._show_normalization_management)
+        self.ui.action_3.triggered.connect(self._show_tagging_management)
+        self._normalization_management_dialog.refresh_requested.connect(
+            self.normalization_management_refresh_requested.emit
+        )
+        self._normalization_management_dialog.create_requested.connect(
+            self.normalization_management_create_requested.emit
+        )
+        self._normalization_management_dialog.update_requested.connect(
+            self.normalization_management_update_requested.emit
+        )
+        self._normalization_management_dialog.revoke_requested.connect(
+            self.normalization_management_revoke_requested.emit
+        )
+        self._normalization_management_dialog.history_requested.connect(
+            self.normalization_management_history_requested.emit
+        )
+        self._tagging_management_dialog.refresh_requested.connect(
+            self.tagging_management_refresh_requested.emit
+        )
+        self._tagging_management_dialog.create_requested.connect(
+            self.tagging_management_create_requested.emit
+        )
+        self._tagging_management_dialog.update_requested.connect(
+            self.tagging_management_update_requested.emit
+        )
+        self._tagging_management_dialog.delete_requested.connect(
+            self.tagging_management_delete_requested.emit
+        )
+        self._tagging_management_dialog.history_requested.connect(
+            self.tagging_management_history_requested.emit
+        )
+
+    def _show_normalization_management(self) -> None:
+        self._normalization_management_dialog.show()
+        self._normalization_management_dialog.raise_()
+        self._normalization_management_dialog.activateWindow()
+
+    def _show_tagging_management(self) -> None:
+        self._tagging_management_dialog.show()
+        self._tagging_management_dialog.raise_()
+        self._tagging_management_dialog.activateWindow()
+
+    def set_normalization_management_records(self, records, total: int) -> None:
+        """由 Controller 在 UI 线程交付规则查询结果。"""
+
+        self._normalization_management_dialog.set_records(records, total)
+
+    def show_normalization_management_history(self, entries) -> None:
+        """展示只读规则管理审计。"""
+
+        self._normalization_management_dialog.show_history(entries)
+
+    def refresh_normalization_management(self) -> None:
+        """管理写入成功后按当前窗口筛选重新异步查询。"""
+
+        self._normalization_management_dialog.refresh_current()
+
+    def set_tagging_management_records(self, records, total: int) -> None:
+        """由 Controller 在 UI 线程交付当前标签查询结果。"""
+
+        self._tagging_management_dialog.set_records(records, total)
+
+    def show_tagging_management_history(self, entries) -> None:
+        """展示旧标签审计和新的管理审计。"""
+
+        self._tagging_management_dialog.show_history(entries)
+
+    def refresh_tagging_management(self) -> None:
+        """标签管理写入成功后按当前窗口筛选重新异步查询。"""
+
+        self._tagging_management_dialog.refresh_current()
 
     def set_tagging_review_items(
         self,

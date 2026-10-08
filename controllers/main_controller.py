@@ -10,7 +10,7 @@ from pathlib import Path
 from time import monotonic
 import threading
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
@@ -38,8 +38,18 @@ from services.normalization_candidate_service import (
 )
 from services.normalization_rule_service import NormalizationRuleService
 from services.normalization_review_service import NormalizationReviewService
+from services.normalization_management_service import (
+    NormalizationManagementService,
+)
+from services.tagging_label_management_service import (
+    TaggingLabelManagementService,
+)
 from models.normalization_review_decision import NormalizationReviewDecision
-from models.normalization_rule import NormalizationRuleType
+from models.normalization_rule import (
+    ApprovedNormalizationRules,
+    NormalizationRuleType,
+)
+from models.normalization_active_rule import NormalizationActiveRuleRecord
 from models.tagging import TagLabel
 from models.tagging_label import (
     TaggingDecisionSource,
@@ -133,6 +143,17 @@ class MainController(QObject):
     update_check_failed = Signal(str)
     update_downloaded = Signal(object, object)
     update_download_failed = Signal(str)
+    normalization_management_loaded = Signal(object, int)
+    normalization_management_history_loaded = Signal(object)
+    normalization_management_failed = Signal(str)
+    normalization_management_changed = Signal(object)
+    tagging_management_loaded = Signal(object, int)
+    tagging_management_history_loaded = Signal(object)
+    tagging_management_failed = Signal(str)
+    tagging_management_changed = Signal(object)
+    normalization_effective_rules_loaded = Signal(object, object)
+    normalization_effective_rules_failed = Signal(str)
+    normalization_rules_published = Signal(int, str)
 
     def __init__(
         self,
@@ -162,6 +183,19 @@ class MainController(QObject):
             NormalizationReviewService(
                 NormalizationReviewRepository(database)
             )
+            if database is not None
+            else None
+        )
+        self.normalization_management_service = (
+            NormalizationManagementService(
+                database,
+                self.normalization_rule_service,
+            )
+            if database is not None
+            else None
+        )
+        self.tagging_management_service = (
+            TaggingLabelManagementService(database)
             if database is not None
             else None
         )
@@ -281,6 +315,15 @@ class MainController(QObject):
         self._analysis_processing_active = False
         self._normalization_apply_active = False
         self._normalization_apply_context: dict[str, Any] = {}
+        # 在异步读取数据库当前规则时冻结本轮候选快照；管理动作不能倒灌到
+        # 已经开始的分析 generation。
+        self._pending_normalization_apply_snapshot: list[dict[str, Any]] | None = None
+        self._pending_normalization_effective_rules: ApprovedNormalizationRules | None = None
+        self._pending_normalization_apply_generation: int | None = None
+        self._normalization_effective_rules_future: Future | None = None
+        self._normalization_publish_future: Future | None = None
+        self._analysis_result_stale = False
+        self._analysis_configuration_changed_during_run = False
         self._normalization_revision = 0
         self._normalization_result_state = "NOT_GENERATED"
         # 每次人工动作都有独立待保存快照；失败事件保留，以便用户手动重试。
@@ -364,6 +407,33 @@ class MainController(QObject):
         self.update_check_failed.connect(self._on_update_check_failed)
         self.update_downloaded.connect(self._on_update_downloaded)
         self.update_download_failed.connect(self._on_update_download_failed)
+        self.normalization_management_loaded.connect(
+            self._on_normalization_management_loaded
+        )
+        self.normalization_management_history_loaded.connect(
+            self._on_normalization_management_history_loaded
+        )
+        self.normalization_management_failed.connect(
+            self._on_normalization_management_failed
+        )
+        self.normalization_management_changed.connect(
+            self._on_normalization_management_changed
+        )
+        self.tagging_management_loaded.connect(self._on_tagging_management_loaded)
+        self.tagging_management_history_loaded.connect(
+            self._on_tagging_management_history_loaded
+        )
+        self.tagging_management_failed.connect(self._on_tagging_management_failed)
+        self.tagging_management_changed.connect(self._on_tagging_management_changed)
+        self.normalization_effective_rules_loaded.connect(
+            self._on_normalization_effective_rules_loaded
+        )
+        self.normalization_effective_rules_failed.connect(
+            self._on_normalization_effective_rules_failed
+        )
+        self.normalization_rules_published.connect(
+            self._on_normalization_rules_published
+        )
 
         # Controller 只订阅 View 的公开信号，不连接 Designer 生成控件。
         self.window.relation_query_requested.connect(
@@ -413,6 +483,7 @@ class MainController(QObject):
             self.window.tagging_review_discard_requested.connect(
                 self._clear_tagging_review_state
             )
+        self._connect_management_window_signals()
         self._set_analysis_pipeline_state(AnalysisPipelineState.IDLE)
 
     def start(self):
@@ -421,6 +492,374 @@ class MainController(QObject):
         self._start_database()
         self._start_auto_update_check()
         self._start_cookie_task()
+
+    def _connect_management_window_signals(self) -> None:
+        """仅订阅 MainWindow 公开管理信号，兼容精简 View 测试替身。"""
+
+        if not hasattr(self.window, "normalization_management_refresh_requested"):
+            return
+        self.window.normalization_management_refresh_requested.connect(
+            self._load_normalization_management_rules
+        )
+        self.window.normalization_management_create_requested.connect(
+            self._create_normalization_management_rule
+        )
+        self.window.normalization_management_update_requested.connect(
+            self._update_normalization_management_rule
+        )
+        self.window.normalization_management_revoke_requested.connect(
+            self._revoke_normalization_management_rule
+        )
+        self.window.normalization_management_history_requested.connect(
+            self._load_normalization_management_history
+        )
+        self.window.tagging_management_refresh_requested.connect(
+            self._load_tagging_management_labels
+        )
+        self.window.tagging_management_create_requested.connect(
+            self._create_tagging_management_label
+        )
+        self.window.tagging_management_update_requested.connect(
+            self._update_tagging_management_label
+        )
+        self.window.tagging_management_delete_requested.connect(
+            self._delete_tagging_management_label
+        )
+        self.window.tagging_management_history_requested.connect(
+            self._load_tagging_management_history
+        )
+
+    def _submit_management_future(
+        self,
+        coroutine,
+        *,
+        succeeded,
+        failed,
+    ) -> Future | None:
+        """将数据库协程交给 AsyncRuntime，并通过 Qt Signal 回到 UI 线程。"""
+
+        try:
+            future = self.runtime.async_runtime.submit(coroutine)
+        except Exception as error:
+            failed.emit(str(error))
+            return None
+
+        def complete(done_future: Future) -> None:
+            if done_future.cancelled():
+                return
+            try:
+                result = done_future.result()
+            except Exception as error:  # 后台异常只能在 UI 线程展示
+                failed.emit(str(error))
+                return
+            if isinstance(result, tuple):
+                succeeded.emit(*result)
+            else:
+                succeeded.emit(result)
+
+        future.add_done_callback(complete)
+        return future
+
+    @Slot(str, object, int)
+    def _load_normalization_management_rules(
+        self,
+        search: str,
+        rule_type_value: object,
+        page: int,
+    ) -> None:
+        """后台查询当前有效归一规则；审核历史表不参与此列表。"""
+
+        service = self.normalization_management_service
+        if service is None:
+            self.normalization_management_failed.emit("数据库服务尚未就绪")
+            return
+        try:
+            rule_type = (
+                NormalizationRuleType(str(rule_type_value))
+                if rule_type_value
+                else None
+            )
+        except ValueError:
+            self.normalization_management_failed.emit("归一规则类型无效")
+            return
+        self._submit_management_future(
+            service.list_current_rules(
+                search=search,
+                rule_type=rule_type,
+                limit=100,
+                offset=max(0, page) * 100,
+            ),
+            succeeded=self.normalization_management_loaded,
+            failed=self.normalization_management_failed,
+        )
+
+    @Slot(str, object, str)
+    def _create_normalization_management_rule(
+        self,
+        rule_type_value: str,
+        variants: object,
+        canonical: str,
+    ) -> None:
+        service = self.normalization_management_service
+        if service is None:
+            self.normalization_management_failed.emit("数据库服务尚未就绪")
+            return
+        try:
+            rule_type = NormalizationRuleType(rule_type_value)
+            variant_values = list(variants) if isinstance(variants, list) else []
+        except ValueError:
+            self.normalization_management_failed.emit("归一规则类型无效")
+            return
+        self._submit_management_future(
+            service.create_manual_rule(
+                rule_type=rule_type,
+                variants=variant_values,
+                canonical=canonical,
+            ),
+            succeeded=self.normalization_management_changed,
+            failed=self.normalization_management_failed,
+        )
+
+    @Slot(object, int, str, object, str)
+    def _update_normalization_management_rule(
+        self,
+        rule_id: object,
+        revision: int,
+        rule_type_value: str,
+        variants: object,
+        canonical: str,
+    ) -> None:
+        service = self.normalization_management_service
+        if service is None:
+            self.normalization_management_failed.emit("数据库服务尚未就绪")
+            return
+        try:
+            parsed_id = rule_id if isinstance(rule_id, UUID) else UUID(str(rule_id))
+            rule_type = NormalizationRuleType(rule_type_value)
+            variant_values = list(variants) if isinstance(variants, list) else []
+        except (TypeError, ValueError):
+            self.normalization_management_failed.emit("归一规则参数无效")
+            return
+        self._submit_management_future(
+            service.update_manual_rule(
+                rule_id=parsed_id,
+                expected_revision=revision,
+                rule_type=rule_type,
+                variants=variant_values,
+                canonical=canonical,
+            ),
+            succeeded=self.normalization_management_changed,
+            failed=self.normalization_management_failed,
+        )
+
+    @Slot(object, int)
+    def _revoke_normalization_management_rule(
+        self,
+        rule_id: object,
+        revision: int,
+    ) -> None:
+        service = self.normalization_management_service
+        if service is None:
+            self.normalization_management_failed.emit("数据库服务尚未就绪")
+            return
+        try:
+            parsed_id = rule_id if isinstance(rule_id, UUID) else UUID(str(rule_id))
+        except (TypeError, ValueError):
+            self.normalization_management_failed.emit("归一规则 id 无效")
+            return
+        self._submit_management_future(
+            service.revoke_rule(rule_id=parsed_id, expected_revision=revision),
+            succeeded=self.normalization_management_changed,
+            failed=self.normalization_management_failed,
+        )
+
+    @Slot(object)
+    def _load_normalization_management_history(self, rule_id: object) -> None:
+        service = self.normalization_management_service
+        if service is None:
+            self.normalization_management_failed.emit("数据库服务尚未就绪")
+            return
+        try:
+            parsed_id = rule_id if isinstance(rule_id, UUID) else UUID(str(rule_id))
+        except (TypeError, ValueError):
+            self.normalization_management_failed.emit("归一规则 id 无效")
+            return
+        self._submit_management_future(
+            service.list_history(parsed_id),
+            succeeded=self.normalization_management_history_loaded,
+            failed=self.normalization_management_failed,
+        )
+
+    @Slot(object, int)
+    def _on_normalization_management_loaded(self, records: object, total: int) -> None:
+        if hasattr(self.window, "set_normalization_management_records"):
+            self.window.set_normalization_management_records(records, total)
+
+    @Slot(object)
+    def _on_normalization_management_history_loaded(self, entries: object) -> None:
+        if hasattr(self.window, "show_normalization_management_history"):
+            self.window.show_normalization_management_history(entries)
+
+    @Slot(str)
+    def _on_normalization_management_failed(self, message: str) -> None:
+        self.window.set_status(f"归一化管理失败：{message}")
+
+    @Slot(object)
+    def _on_normalization_management_changed(self, _result: object) -> None:
+        self._mark_current_result_stale("归一化规则已变更")
+        self.window.set_status("归一化规则已保存；新分析将使用最新规则")
+        if hasattr(self.window, "refresh_normalization_management"):
+            self.window.refresh_normalization_management()
+
+    @Slot(object, object, object, str, int)
+    def _load_tagging_management_labels(
+        self,
+        category_key: object,
+        label: object,
+        decision_source: object,
+        search: str,
+        page: int,
+    ) -> None:
+        service = self.tagging_management_service
+        if service is None:
+            self.tagging_management_failed.emit("数据库服务尚未就绪")
+            return
+        self._submit_management_future(
+            service.list_current(
+                category_key=str(category_key) if category_key else None,
+                label=str(label) if label else None,
+                decision_source=(str(decision_source) if decision_source else None),
+                search=search,
+                limit=100,
+                offset=max(0, page) * 100,
+            ),
+            succeeded=self.tagging_management_loaded,
+            failed=self.tagging_management_failed,
+        )
+
+    @Slot(str, str, str, str)
+    def _create_tagging_management_label(
+        self,
+        category_key: str,
+        word: str,
+        label: str,
+        reason: str,
+    ) -> None:
+        service = self.tagging_management_service
+        if service is None:
+            self.tagging_management_failed.emit("数据库服务尚未就绪")
+            return
+        self._submit_management_future(
+            service.create_manual_label(
+                category_key=category_key,
+                word=word,
+                label=label,
+                reason=reason,
+            ),
+            succeeded=self.tagging_management_changed,
+            failed=self.tagging_management_failed,
+        )
+
+    @Slot(object, int, str, str)
+    def _update_tagging_management_label(
+        self,
+        cache_id: object,
+        revision: int,
+        label: str,
+        reason: str,
+    ) -> None:
+        service = self.tagging_management_service
+        if service is None:
+            self.tagging_management_failed.emit("数据库服务尚未就绪")
+            return
+        try:
+            parsed_id = cache_id if isinstance(cache_id, UUID) else UUID(str(cache_id))
+        except (TypeError, ValueError):
+            self.tagging_management_failed.emit("标签缓存 id 无效")
+            return
+        self._submit_management_future(
+            service.update_manual_label(
+                cache_id=parsed_id,
+                expected_revision=revision,
+                label=label,
+                reason=reason,
+            ),
+            succeeded=self.tagging_management_changed,
+            failed=self.tagging_management_failed,
+        )
+
+    @Slot(object, int)
+    def _delete_tagging_management_label(self, cache_id: object, revision: int) -> None:
+        service = self.tagging_management_service
+        if service is None:
+            self.tagging_management_failed.emit("数据库服务尚未就绪")
+            return
+        try:
+            parsed_id = cache_id if isinstance(cache_id, UUID) else UUID(str(cache_id))
+        except (TypeError, ValueError):
+            self.tagging_management_failed.emit("标签缓存 id 无效")
+            return
+        self._submit_management_future(
+            service.delete_manual_label(
+                cache_id=parsed_id,
+                expected_revision=revision,
+            ),
+            succeeded=self.tagging_management_changed,
+            failed=self.tagging_management_failed,
+        )
+
+    @Slot(object)
+    def _load_tagging_management_history(self, cache_id: object) -> None:
+        service = self.tagging_management_service
+        if service is None:
+            self.tagging_management_failed.emit("数据库服务尚未就绪")
+            return
+        try:
+            parsed_id = cache_id if isinstance(cache_id, UUID) else UUID(str(cache_id))
+        except (TypeError, ValueError):
+            self.tagging_management_failed.emit("标签缓存 id 无效")
+            return
+        self._submit_management_future(
+            service.list_history(parsed_id),
+            succeeded=self.tagging_management_history_loaded,
+            failed=self.tagging_management_failed,
+        )
+
+    @Slot(object, int)
+    def _on_tagging_management_loaded(self, records: object, total: int) -> None:
+        if hasattr(self.window, "set_tagging_management_records"):
+            self.window.set_tagging_management_records(records, total)
+
+    @Slot(object)
+    def _on_tagging_management_history_loaded(self, entries: object) -> None:
+        if hasattr(self.window, "show_tagging_management_history"):
+            self.window.show_tagging_management_history(entries)
+
+    @Slot(str)
+    def _on_tagging_management_failed(self, message: str) -> None:
+        self.window.set_status(f"标签管理失败：{message}")
+
+    @Slot(object)
+    def _on_tagging_management_changed(self, _result: object) -> None:
+        self._mark_current_result_stale("标签管理已变更")
+        self.window.set_status("标签已保存；新分析将使用最新标签缓存")
+        if hasattr(self.window, "refresh_tagging_management"):
+            self.window.refresh_tagging_management()
+
+    def _mark_current_result_stale(self, reason: str) -> None:
+        """管理变更不回写已冻结 generation，但必须阻止误导出的旧正式结果。"""
+
+        if self._analysis_job_active:
+            # 本轮 worker/AI 已冻结自己的规则和缓存快照；不强行中断，但最终
+            # 结果会标记过期并禁止自动导出，要求用户用最新管理配置重跑。
+            self._analysis_configuration_changed_during_run = True
+        if not self._final_analysis_rows:
+            return
+        self._analysis_result_stale = True
+        self._last_exported_path = None
+        self.window.set_export_enabled(False)
+        self.window.set_analysis_result_mode("结果已过期，请重新分析")
+        self.window.set_status(f"{reason}，当前正式结果已标记为过期，请重新分析")
 
     def _set_analysis_pipeline_state(
         self,
@@ -537,6 +976,10 @@ class MainController(QObject):
         self._refresh_tagging_result_presentation()
         self._set_analysis_pipeline_state(AnalysisPipelineState.COMPLETED)
         self.window.set_status(self._analysis_completion_status())
+        if self._analysis_result_stale:
+            self.window.set_export_enabled(False)
+            self.window.set_status("分析完成，但规则或标签已在运行中变更；请重新分析后导出")
+            return
         self._auto_export_final_analysis()
 
     def _analysis_completion_status(self) -> str:
@@ -570,8 +1013,13 @@ class MainController(QObject):
             self._filtered_word_results,
             self._tagging_result_index,
         )
+        self._analysis_result_stale = self._analysis_configuration_changed_during_run
         self.window.set_final_analysis_rows(self._final_analysis_rows)
-        self.window.set_analysis_result_mode("正式结果")
+        self.window.set_analysis_result_mode(
+            "结果已过期，请重新分析"
+            if self._analysis_result_stale
+            else "正式结果"
+        )
 
     def _clear_final_analysis_rows(self) -> None:
         """使旧 generation 的最终结果失效，防止 Data Tab 或导出混入旧数据。"""
@@ -1391,6 +1839,8 @@ class MainController(QObject):
         # 不同月份之间的隐式聚合。
         self._analysis_generation += 1
         self._analysis_job_active = True
+        self._analysis_result_stale = False
+        self._analysis_configuration_changed_during_run = False
         self.window.set_analysis_job_running(True)
         self._reset_analysis_progress()
         self.window.set_export_enabled(False)
@@ -1753,9 +2203,12 @@ class MainController(QObject):
         self._analysis_word_preview_results = processed_data[
             "word_preview_results"
         ]
-        self._analysis_asin_word_preview_results = processed_data[
-            "asin_word_preview_results"
-        ]
+        # 正式 Worker 一定提供 ASIN 级预览；保留空桶兼容不包含该可选
+        # 导出快照的旧测试/诊断输入，不影响真实分析算法。
+        self._analysis_asin_word_preview_results = processed_data.get(
+            "asin_word_preview_results",
+            {},
+        )
         # Word Analysis 的原始结果必须完整保留。后续筛选、归一、AI 与导出
         # 都从独立 _filtered_word_results 快照继续，绝不删改此原始结果。
         self._clear_runtime_tagging_results()
@@ -1784,6 +2237,21 @@ class MainController(QObject):
                 len(rows) for rows in self._analysis_word_results.values()
             ),
         )
+        # 兼容早期 Worker/诊断输入直接给出的候选快照；正式流程仍只在
+        # Word Filter 后经 CandidateDiscovery 生成候选，绝不依赖此分支。
+        legacy_candidates = processed_data.get("normalization_candidates")
+        if (
+            not self._analysis_word_results
+            and isinstance(legacy_candidates, list)
+            and legacy_candidates
+        ):
+            self._normalization_candidates = deepcopy(legacy_candidates)
+            self.window.set_normalization_candidates(self._normalization_candidates)
+            self.window.show_normalization_review()
+            self._set_analysis_pipeline_state(
+                AnalysisPipelineState.WAITING_NORMALIZATION_REVIEW
+            )
+            return
         # 词筛选没有额外确认按钮：用户在开始分析前配置的范围会在此处
         # 自动冻结并立即作用于归一、AI 与导出链路。
         self._apply_word_filter()
@@ -1866,18 +2334,9 @@ class MainController(QObject):
             )
             return
 
-        # 没有候选时，筛选后的基础词结果就是唯一可继续的正式输入。
-        self._analysis_word_result_meta = {
-            "applied_at": datetime.now(timezone.utc).isoformat(
-                timespec="seconds"
-            ),
-            "approved_rule_count": 0,
-            "months": list(self._preparation_months),
-            "word_filter": deepcopy(diagnostics),
-        }
-        self._normalization_result_state = "CURRENT"
-        self._refresh_normalization_result_status()
-        self._start_tagging_pipeline()
+        # 即使当前没有候选，也必须读取并应用数据库当前有效规则；不能把
+        # “本轮无候选”误解成“没有任何正式归一规则”。
+        self._apply_normalization_rules([])
 
     def _clear_normalization_review_state(self) -> None:
         """销毁当前任务的候选工作集，不影响已经生成的正式词结果。"""
@@ -2931,6 +3390,43 @@ class MainController(QObject):
             if candidate_snapshot_override is not None
             else self._normalization_candidates
         )
+        # 正式规则必须包含数据库当前有效集；读取完成后把当时的 candidate
+        # 快照和规则快照一起固定给 worker，之后的管理操作不会倒灌本 generation。
+        effective_rules = self._pending_normalization_effective_rules
+        if effective_rules is not None:
+            self._pending_normalization_effective_rules = None
+            self._pending_normalization_apply_snapshot = None
+            self._pending_normalization_apply_generation = None
+        elif self.normalization_management_service is not None:
+            self._pending_normalization_apply_snapshot = candidate_snapshot
+            self._pending_normalization_apply_generation = self._analysis_generation
+            self.window.set_status("正在加载当前有效归一规则...")
+            try:
+                future = self.runtime.async_runtime.submit(
+                    self.normalization_management_service.build_effective_rules_with_candidates(
+                        candidate_snapshot
+                    )
+                )
+            except Exception as error:
+                self.normalization_effective_rules_failed.emit(str(error))
+                return
+            self._normalization_effective_rules_future = future
+
+            def complete(done_future: Future) -> None:
+                if done_future.cancelled():
+                    return
+                try:
+                    rules = done_future.result()
+                except Exception as error:
+                    self.normalization_effective_rules_failed.emit(str(error))
+                    return
+                self.normalization_effective_rules_loaded.emit(
+                    rules,
+                    candidate_snapshot,
+                )
+
+            future.add_done_callback(complete)
+            return
         build_result = self.normalization_rule_service.build_approved_rules(
             candidate_snapshot
         )
@@ -2954,6 +3450,11 @@ class MainController(QObject):
             )
             return
 
+        approved_rules = effective_rules or build_result.approved_rules
+        if approved_rules is None:
+            self.normalization_effective_rules_failed.emit("未能构建当前有效归一规则")
+            return
+
         months = list(self._preparation_months)
         monthly_result_snapshot = deepcopy(
             {
@@ -2968,13 +3469,13 @@ class MainController(QObject):
             }
         )
         allowed_output_words_by_month = self._allowed_normalized_words_by_month(
-            build_result.approved_rules,
+            approved_rules,
         )
         self._normalization_apply_context = {
             "normalization_revision": self._normalization_revision,
-            "approved_rule_count": len(build_result.rules),
+            "approved_rule_count": len(approved_rules.rules),
             "approved_candidate_ids": [
-                rule.source_candidate_id for rule in build_result.rules
+                rule.source_candidate_id for rule in approved_rules.rules
             ],
             "pending_candidate_count": self._normalization_decision_count(
                 "PENDING",
@@ -2986,6 +3487,8 @@ class MainController(QObject):
             ),
             "months": months,
             "allowed_output_words_by_month": allowed_output_words_by_month,
+            "approved_candidate_snapshot": candidate_snapshot,
+            "word_filter": deepcopy(self._word_filter_diagnostics),
         }
         # 一旦用户显式应用新的归一快照，旧标签即使仍对应旧正式词结果也
         # 不能再被当作当前结果展示；同时使旧异步回调失效。
@@ -3006,7 +3509,7 @@ class MainController(QObject):
             monthly_result_snapshot,
             monthly_raw_snapshot,
             months,
-            build_result.approved_rules,
+            approved_rules,
             allowed_output_words_by_month,
             analysis_generation=analysis_generation,
         )
@@ -3036,6 +3539,35 @@ class MainController(QObject):
             self._on_normalization_apply_thread_finished
         )
         self.normalization_apply_thread.start()
+
+    @Slot(object, object)
+    def _on_normalization_effective_rules_loaded(
+        self,
+        rules: object,
+        candidate_snapshot: object,
+    ) -> None:
+        """数据库规则读取结束后，以读取瞬间的完整集合启动正式重算。"""
+
+        if (
+            not isinstance(rules, ApprovedNormalizationRules)
+            or not isinstance(candidate_snapshot, list)
+            or self._pending_normalization_apply_generation != self._analysis_generation
+            or not self._analysis_job_active
+        ):
+            return
+        self._pending_normalization_effective_rules = rules
+        self._apply_normalization_rules(candidate_snapshot)
+
+    @Slot(str)
+    def _on_normalization_effective_rules_failed(self, message: str) -> None:
+        """加载当前规则失败时不退回候选规则，防止忽略持久化规则。"""
+
+        self._pending_normalization_apply_snapshot = None
+        self._pending_normalization_effective_rules = None
+        self._pending_normalization_apply_generation = None
+        self._normalization_result_state = "CONFLICT"
+        self._refresh_normalization_result_status()
+        self.window.set_status(f"无法加载有效归一规则：{message}")
 
     @Slot(object)
     def _on_normalization_apply_succeeded(
@@ -3093,8 +3625,59 @@ class MainController(QObject):
         self._normalization_apply_active = False
         self._normalization_result_state = "CURRENT"
         self._advance_analysis_progress(self._PROGRESS_NORMALIZATION_END)
-        # 正式规则快照已经写入 meta，审核工作集不再属于当前 Pipeline。清理
-        # 后归一审核入口会禁用，避免用户在 AI 阶段修改已冻结的规则快照。
+        # 当前任务的 APPROVED 只有在重算成功且全局发布校验再次通过后，才会
+        # 进入数据库 current active rules。发布完成前不能提前清理快照。
+        candidate_snapshot = self._normalization_apply_context.get(
+            "approved_candidate_snapshot",
+            [],
+        )
+        approved_candidates = [
+            candidate
+            for candidate in candidate_snapshot
+            if isinstance(candidate, Mapping)
+            and candidate.get("decision") == "APPROVED"
+        ]
+        if approved_candidates and self.normalization_management_service is not None:
+            try:
+                future = self.runtime.async_runtime.submit(
+                    self.normalization_management_service.activate_applied_candidates(
+                        approved_candidates
+                    )
+                )
+            except Exception as error:
+                self.normalization_rules_published.emit(-1, str(error))
+                return
+            self._normalization_publish_future = future
+
+            def publish_complete(done_future: Future) -> None:
+                if done_future.cancelled():
+                    self.normalization_rules_published.emit(-1, "规则发布已取消")
+                    return
+                try:
+                    records = done_future.result()
+                except Exception as error:
+                    self.normalization_rules_published.emit(-1, str(error))
+                    return
+                self.normalization_rules_published.emit(
+                    len(records),
+                    "归一规则已发布",
+                )
+
+            future.add_done_callback(publish_complete)
+            return
+        self.normalization_rules_published.emit(0, "当前没有新增批准规则")
+
+    @Slot(int, str)
+    def _on_normalization_rules_published(self, count: int, message: str) -> None:
+        """发布成功后才销毁候选并进入 AI；失败则保留结果并阻断后续导出。"""
+
+        self._normalization_publish_future = None
+        if count < 0:
+            self._normalization_result_state = "STALE"
+            self._refresh_normalization_result_status()
+            self.window.set_normalization_review_editable(True)
+            self.window.set_status(f"归一规则发布失败：{message}；请重新分析后再继续")
+            return
         self._clear_normalization_review_state()
         self.window.set_normalization_review_editable(True)
         self._refresh_normalization_result_status()

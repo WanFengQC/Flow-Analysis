@@ -4,6 +4,7 @@ from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timezone
 from enum import StrEnum
+import asyncio
 import logging
 from pathlib import Path
 from time import monotonic
@@ -29,6 +30,7 @@ from services.api_service import (
 )
 from services.crawler_service import (
     CrawlerService,
+    ReversingDataSourcePermissionError,
     ReversingPreparationRetriesExhaustedError,
 )
 from services.normalization_candidate_service import (
@@ -57,6 +59,7 @@ from services.amazon_product_context_provider import (
 from services.product_knowledge_service import ProductKnowledgeService
 from services.tagging_service import TaggingService
 from services.word_filter_service import WordFilterService
+from services.cookie_service import CookieService
 from workers.analysis_worker import AnalysisWorker
 from workers.cookie_worker import CookieWorker
 from workers.normalization_apply_worker import NormalizationApplyWorker
@@ -293,6 +296,13 @@ class MainController(QObject):
         self._preparation_months: list[str] = []
         self._preparation_month_index = 0
         self._preparation_index = 0
+        # 任务总数在启动时固定。某个 ASIN 被人工跳过后仍要把已尝试的
+        # 当前任务计入总进度，避免进度条因为列表缩短而回退或跳动。
+        self._preparation_total_task_count = 0
+        self._preparation_completed_task_count = 0
+        # 跳过只针对当前“ASIN × 月份”任务；绝不以空数据替代，也不写入
+        # 历史规则或数据库。保留缺失月份，供本轮完成状态说明。
+        self._skipped_reversing_months: dict[str, list[dict[str, str]]] = {}
         self._reversing_preparation_active = False
         self._reversing_preparation_status = "idle"
 
@@ -495,7 +505,7 @@ class MainController(QObject):
     def _update_reversing_progress(self, completed_task_count: int) -> None:
         """按“月份 × ASIN”总任务数累计 reversing 阶段的 0–20% 进度。"""
 
-        total_task_count = (
+        total_task_count = self._preparation_total_task_count or (
             len(self._preparation_months) * len(self._preparation_asins)
         )
         if total_task_count <= 0:
@@ -526,12 +536,32 @@ class MainController(QObject):
         self.window.set_export_enabled(False)
         self._refresh_tagging_result_presentation()
         self._set_analysis_pipeline_state(AnalysisPipelineState.COMPLETED)
+        self.window.set_status(self._analysis_completion_status())
+        self._auto_export_final_analysis()
+
+    def _analysis_completion_status(self) -> str:
+        """构造本轮完成状态，并明确标识人工跳过的无数据月份。"""
+
+        details: list[str] = []
         incomplete_count = self._tagging_statistics["incomplete"]
         if incomplete_count:
-            self.window.set_status(f"分析完成（{incomplete_count} 条未完成）")
-        else:
-            self.window.set_status("分析完成")
-        self._auto_export_final_analysis()
+            details.append(f"{incomplete_count} 条未完成")
+
+        missing_month_details = []
+        for asin, records in self._skipped_reversing_months.items():
+            months = [
+                record["month"]
+                for record in records
+                if record.get("month")
+            ]
+            if months:
+                missing_month_details.append(
+                    f"{asin}: {', '.join(months)} 无数据"
+                )
+        if missing_month_details:
+            details.append("已跳过 " + "；".join(missing_month_details))
+
+        return "分析完成" if not details else f"分析完成（{'；'.join(details)}）"
 
     def _build_final_analysis_rows(self) -> None:
         """在 FINALIZING 阶段建立唯一 Final Analysis Dataset 并刷新 Data Tab。"""
@@ -1092,13 +1122,35 @@ class MainController(QObject):
                 return
 
         self.api_service = ApiService(cookie)
-        self.crawler_service = CrawlerService(self.api_service)
+        self.crawler_service = CrawlerService(
+            self.api_service,
+            refresh_cookie=self._refresh_cookie_for_reversing,
+        )
         self._api_ready = True
 
         self.window.set_cookie_status("正常")
         self.window.set_api_status("就绪")
         self.window.set_relation_query_available(True)
         self._update_initialization_status()
+
+    async def _refresh_cookie_for_reversing(self) -> None:
+        """权限拒绝时刷新 Cookie 并切换当前 Async HTTP Client。"""
+
+        api_service = self.api_service
+        if api_service is None:
+            raise RuntimeError("SellerSprite API 尚未初始化，无法刷新 Cookie")
+
+        # CookieService 是同步 I/O，必须放入工作线程；不能阻塞 AsyncRuntime
+        # 的 EventLoop，更不能在 Qt 主线程进行网络访问。
+        fresh_cookie = await asyncio.to_thread(
+            CookieService().refresh_cookie
+        )
+        await api_service.replace_cookies(fresh_cookie)
+        # 仅更新普通 Python 状态，不在此后台协程直接更新任何 Qt 控件。
+        self.cookie = fresh_cookie
+        logger.info(
+            "SellerSprite relation 数据源权限被拒绝，已刷新 Cookie 并重建 HTTP Client"
+        )
 
     @Slot(str)
     def _on_cookie_error(
@@ -1369,6 +1421,11 @@ class MainController(QObject):
         self._preparation_months = list(analysis_months)
         self._preparation_month_index = 0
         self._preparation_index = 0
+        self._preparation_total_task_count = (
+            len(self._preparation_months) * len(self._preparation_asins)
+        )
+        self._preparation_completed_task_count = 0
+        self._skipped_reversing_months = {}
         self._reversing_preparation_active = True
         self._reversing_preparation_status = "running"
 
@@ -1412,11 +1469,9 @@ class MainController(QObject):
             return
 
         asin = self._preparation_asins[self._preparation_index]
-        completed_task_count = (
-            self._preparation_month_index * len(self._preparation_asins)
-            + self._preparation_index
+        self._update_reversing_progress(
+            self._preparation_completed_task_count
         )
-        self._update_reversing_progress(completed_task_count)
 
         try:
             self._log_analysis_pipeline_debug("before reversing submit")
@@ -1480,12 +1535,10 @@ class MainController(QObject):
         self.reversing_preparation_future = None
         self._log_analysis_pipeline_debug("reversing succeeded in Qt slot")
         self._reversing_results[month][asin] = data
-        completed_task_count = (
-            self._preparation_month_index * len(self._preparation_asins)
-            + self._preparation_index
-            + 1
+        self._preparation_completed_task_count += 1
+        self._update_reversing_progress(
+            self._preparation_completed_task_count
         )
-        self._update_reversing_progress(completed_task_count)
         self._preparation_index += 1
 
         if self._preparation_index >= len(self._preparation_asins):
@@ -1512,11 +1565,31 @@ class MainController(QObject):
             return
 
         self.reversing_preparation_future = None
+        if isinstance(exc, ReversingDataSourcePermissionError):
+            self._stop_reversing_preparation(
+                "分析数据准备失败：已刷新 Cookie，但仍无当前数据源访问权限"
+            )
+            return
+
         if isinstance(exc, ReversingPreparationRetriesExhaustedError):
             # 弹窗只能由主线程的 View 创建；用户选择重试时保持当前索引，
             # 因而只会从当前失败 ASIN 的 monthly 预热重新开始。
-            if self.window.ask_reversing_data_retry(asin):
+            decision = self.window.ask_reversing_data_retry(
+                asin,
+                month=month,
+                reason=exc.last_reason,
+            )
+            # 兼容旧测试桩的 bool 返回值；正式 View 返回 retry / skip / cancel。
+            if decision is True or decision == "retry":
                 self._submit_current_reversing_preparation()
+                return
+
+            if decision == "skip":
+                self._skip_current_reversing_month(
+                    asin,
+                    month,
+                    exc.last_reason,
+                )
                 return
 
             self._stop_reversing_preparation("分析数据准备失败")
@@ -1525,6 +1598,43 @@ class MainController(QObject):
         self._stop_reversing_preparation(
             self._preparation_error_message(exc)
         )
+
+    def _skip_current_reversing_month(
+        self,
+        asin: str,
+        month: str,
+        reason: str,
+    ) -> None:
+        """人工跳过当前无数据的 ASIN × 月份任务，并继续本轮任务。"""
+
+        # 只能跳过仍处于当前串行位置的 ASIN，防止旧 Future 回调误删新任务。
+        if (
+            not self._reversing_preparation_active
+            or self._current_preparation_asin() != asin
+        ):
+            return
+
+        # 只记录当前缺失月份；其他月份的真实数据必须保留，后续月份也继续
+        # 尝试该 ASIN。缺失数据不伪造、不跨月补齐。
+        skipped_months = self._skipped_reversing_months.setdefault(asin, [])
+        skipped_months.append({
+            "month": month,
+            "reason": reason,
+        })
+        self._preparation_completed_task_count += 1
+        self._update_reversing_progress(
+            self._preparation_completed_task_count
+        )
+
+        self._preparation_index += 1
+        if self._preparation_index >= len(self._preparation_asins):
+            self._preparation_month_index += 1
+            self._preparation_index = 0
+
+        self.window.set_status(
+            f"已跳过 ASIN {asin} 的 {month}（无可用数据），继续分析其余月份和 ASIN"
+        )
+        self._submit_current_reversing_preparation()
 
     def _finish_reversing_preparation_success(self):
         """在所有选择 ASIN 均成功后启动后台 RAW / RESULT 数据处理。"""

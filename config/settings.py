@@ -35,6 +35,12 @@ PRODUCT_KNOWLEDGE_RESOURCE_DIR = (
 )
 PRODUCT_KNOWLEDGE_DOCUMENT_NAMES = ("产品资料-U.txt", "产品资料-M.txt")
 
+# 打包流程在构建目录生成该文件，再作为 PyInstaller 数据资源写入 EXE。
+# 它绝不能放在源码 resources/ 目录，更不能被 Git 跟踪。
+PACKAGED_RUNTIME_CONFIG_PATH = (
+    APPLICATION_RESOURCE_DIR / "resources" / "embedded_runtime_config.json"
+)
+
 
 def _load_env_file(env_path: Path) -> None:
     """以最小 dotenv 语义读取一个 .env，且不覆盖进程环境变量。"""
@@ -82,8 +88,39 @@ def _load_application_env() -> None:
 _load_application_env()
 
 
+def _load_packaged_runtime_config() -> dict[str, str]:
+    """仅在冻结后的桌面程序读取打包期注入的运行配置。"""
+
+    if not getattr(sys, "frozen", False):
+        return {}
+    try:
+        payload = json.loads(PACKAGED_RUNTIME_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        str(name): value.strip()
+        for name, value in payload.items()
+        if isinstance(value, str) and value.strip()
+    }
+
+
+_PACKAGED_RUNTIME_CONFIG = _load_packaged_runtime_config()
+
+
+def _runtime_setting(name: str, default: str = "") -> str:
+    """环境变量优先，其次读取 EXE 内置配置，最后使用非敏感默认值。"""
+
+    return (
+        os.getenv(name, "").strip()
+        or _PACKAGED_RUNTIME_CONFIG.get(name, "").strip()
+        or default
+    )
+
+
 # 发布版本只由源码维护；更新清单只能提供更高的正式语义化版本。
-APP_VERSION = "3.0.7"
+APP_VERSION = "3.0.8"
 
 # Cookie 获取接口
 COOKIE_API_URL = "http://192.168.110.107:18765/api/cookie"
@@ -103,15 +140,11 @@ AMAZON_ZIP_CODE = os.getenv("AMAZON_ZIP_CODE", "10001").strip() or "10001"
 # Cookie 本地缓存文件路径
 COOKIE_CACHE_FILE = APP_DATA_DIR / "cookie.json"
 
-# 用于验证 Cookie 是否有效的业务接口
-SELLERSPRITE_ME_URL = "https://www.sellersprite.com/v2/me"
-
-
-# UniAPI 使用 OpenAI-compatible 路由承载三家 AI Tagging Provider。当前正式
-# 桌面发布版内置一套项目专用默认配置，确保首次安装无需手动创建 .env；运行
-# 环境变量仍可覆盖，便于后续轮换专用 Key。该值绝不能输出到日志、异常或 UI。
+# UniAPI 使用 OpenAI-compatible 路由承载三家 AI Tagging Provider。发布版的
+# Key 只在构建时注入 EXE；源码、Git 和 .env.example 均不保存真实 Key。
+# 运行环境变量优先，便于后续轮换项目专用凭据。
 UNIAPI_BASE_URL = "https://api.uniapi.io/v1"
-UNIAPI_API_KEY = os.getenv("UNIAPI_API_KEY", "").strip()
+UNIAPI_API_KEY = _runtime_setting("UNIAPI_API_KEY")
 
 # 下列值必须由 UniAPI 当前模型列表或控制台配置后提供。
 # 业务显示名称与真实 model_id 分离，避免把显示名称误当作请求参数。

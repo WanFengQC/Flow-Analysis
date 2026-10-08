@@ -1,5 +1,4 @@
 import json
-from datetime import datetime, timezone
 
 import httpx
 
@@ -7,7 +6,6 @@ from config.settings import (
     COOKIE_API_URL,
     COOKIE_CACHE_FILE,
     REQUEST_TIMEOUT,
-    SELLERSPRITE_ME_URL,
 )
 
 
@@ -16,32 +14,49 @@ class CookieService:
 
     def get_cookie(self):
         """
-        获取一个当前可用的 Cookie。
+        启动时同步最新 Cookie，但始终从本地缓存文件返回请求凭据。
 
-        优先使用本地缓存；
-        缓存失效后重新调用 Cookie 接口获取。
+        每次启动都会请求内网 Cookie 服务。若新旧内容相同，绝不改写本地文件；
+        若内容不同，才覆盖本地缓存，随后重新读取该文件作为 API Client 的
+        唯一 Cookie 来源。内网服务暂时不可用时，才回退已有本地文件。
         """
 
-        # 读取本地 Cookie
         cached_cookie = self._load_cached_cookie()
 
-        if cached_cookie is not None:
-            # 验证当前缓存 Cookie
-            is_valid, detail, validated_at = self._is_cookie_valid(
-                cached_cookie
-            )
-
-            if is_valid:
+        try:
+            return self._fetch_and_sync_local_cookie(cached_cookie)
+        except (httpx.HTTPError, RuntimeError, json.JSONDecodeError):
+            # 内网 Cookie 服务不可用时不修改缓存；若本地已有完整 Cookie，
+            # 允许保留原行为继续运行，实际数据接口会继续负责权限判定。
+            if cached_cookie is not None:
                 return cached_cookie
+            raise
 
-        # 本地 Cookie 不存在或已经失效，
-        # 重新从局域网 Cookie 接口获取
-        cookie = self._fetch_cookie()
+    def refresh_cookie(self) -> dict[str, str]:
+        """强制同步内网最新 Cookie，并返回重新读取后的本地副本。"""
 
-        # 保存新的 Cookie
-        self._save_cookie(cookie)
+        return self._fetch_and_sync_local_cookie(
+            self._load_cached_cookie()
+        )
 
-        return cookie
+    def _fetch_and_sync_local_cookie(
+        self,
+        cached_cookie: dict[str, str] | None,
+    ) -> dict[str, str]:
+        """取远端 Cookie，仅在变化时写本地，最后从本地文件读取返回。"""
+
+        fresh_cookie = self._fetch_cookie()
+        if cached_cookie == fresh_cookie:
+            # 接口请求继续使用本地文件所代表的同一份 Cookie；相同内容不触碰
+            # 文件，保留原有修改时间，避免无意义写入。
+            return cached_cookie
+
+        self._save_cookie(fresh_cookie)
+        persisted_cookie = self._load_cached_cookie()
+        if persisted_cookie == fresh_cookie:
+            return persisted_cookie
+
+        raise RuntimeError("最新 Cookie 写入本地缓存后校验失败")
 
     def _load_cached_cookie(self):
         """从本地缓存文件读取 Cookie。"""
@@ -124,113 +139,5 @@ class CookieService:
             raise RuntimeError("Cookie 接口未返回有效的 cookies 数据")
 
         return cookies
-
-    def _is_cookie_valid(
-            self,
-            cookies: dict[str, str],
-    ) -> tuple[bool, str, datetime]:
-        """
-        验证 Cookie 是否仍然有效。
-
-        返回：
-            bool:
-                Cookie 是否有效
-
-            str:
-                验证结果描述
-
-            datetime:
-                本次验证时间（UTC）
-        """
-
-        # 先清洗 Cookie，去掉空 key 和空 value
-        safe_cookies = self._normalize_cookies(cookies)
-
-        # Cookie 为空时，没有必要继续请求验证接口
-        if not safe_cookies:
-            return (
-                False,
-                "cookie empty",
-                datetime.now(timezone.utc),
-            )
-
-        try:
-            # 不自动跟随重定向。
-            # 如果 Cookie 失效，服务器通常会把请求重定向到登录页面，
-            # 我们需要自己看到这个 302，而不是让 httpx 自动跳过去。
-            with httpx.Client(
-                    timeout=REQUEST_TIMEOUT,
-                    follow_redirects=False,
-            ) as client:
-                response = client.get(
-                    SELLERSPRITE_ME_URL,
-                    cookies=safe_cookies,
-                )
-
-            # 当前验证完成时间
-            validated_at = datetime.now(timezone.utc)
-
-            # HTTP 状态码
-            status_code = response.status_code
-
-            # 某些登录失效场景会通过 Location 告诉浏览器跳转登录页
-            location = response.headers.get("location", "")
-
-            # 正常访问业务接口，说明 Cookie 当前有效
-            if status_code == 200:
-                return True, "ok", validated_at
-
-            # Cookie 失效后，接口可能重定向到登录页面
-            if (
-                    status_code in (301, 302, 303, 307, 308)
-                    and "login" in location.lower()
-            ):
-                return False, "redirect login", validated_at
-
-            # 有些接口不会重定向，而是直接返回未授权状态
-            if status_code in (401, 403):
-                return False, f"http {status_code}", validated_at
-
-            # 其他非预期状态统一视为验证失败
-            return False, f"http {status_code}", validated_at
-
-        except httpx.HTTPError as exc:
-            # 只捕获 HTTPX 的网络相关异常，
-            # 避免把真正的代码 Bug 也误判成 Cookie 失效
-            return (
-                False,
-                f"validate error: {exc}",
-                datetime.now(timezone.utc),
-            )
-
-    @staticmethod
-    def _normalize_cookies(
-            cookies: dict[str, str] | None,
-    ) -> dict[str, str]:
-        """
-        清洗 Cookie 数据。
-
-        去掉：
-        - 空 key
-        - 空 value
-
-        同时确保 key 和 value 都是字符串。
-        """
-
-        if not cookies:
-            return {}
-
-        safe_cookies = {}
-
-        for key, value in cookies.items():
-            key = str(key).strip()
-            value = str(value).strip()
-
-            if not key or not value:
-                continue
-
-            safe_cookies[key] = value
-
-        return safe_cookies
 
     # TODO: 补充 Cookie 获取失败后的重试机制

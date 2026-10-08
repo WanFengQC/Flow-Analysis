@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>TaggingReviewDialog</class>
+ <widget class="QDialog" name="TaggingReviewDialog">
+  <property name="windowTitle">
+   <string>AI 标签人工审核</string>
+  </property>
+  <property name="modal">
+   <bool>false</bool>
+  </property>
+  <layout class="QVBoxLayout" name="taggingReviewRootLayout">
+   <property name="spacing">
+    <number>10</number>
+   </property>
+   <property name="leftMargin">
+    <number>14</number>
+   </property>
+   <property name="topMargin">
+    <number>14</number>
+   </property>
+   <property name="rightMargin">
+    <number>14</number>
+   </property>
+   <property name="bottomMargin">
+    <number>14</number>
+   </property>
+   <item>
+    <layout class="QHBoxLayout" name="taggingReviewHeaderLayout">
+     <item>
+      <widget class="QLabel" name="taggingReviewTitleLabel">
+       <property name="font">
+        <font><pointsize>14</pointsize><bold>true</bold></font>
+       </property>
+       <property name="text"><string>AI 标签人工审核</string></property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="taggingReviewHeaderSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QLabel" name="taggingReviewProgressLabel">
+       <property name="text"><string>已完成 0 / 0，待审核 0</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QLineEdit" name="taggingReviewSearchLineEdit">
+     <property name="minimumSize"><size><width>0</width><height>32</height></size></property>
+     <property name="placeholderText"><string>搜索 word / top phrase</string></property>
+     <property name="clearButtonEnabled"><bool>true</bool></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QSplitter" name="taggingReviewSplitter">
+     <property name="orientation"><enum>Qt::Horizontal</enum></property>
+     <property name="childrenCollapsible"><bool>false</bool></property>
+     <widget class="QWidget" name="taggingReviewListPanel">
+      <layout class="QVBoxLayout" name="taggingReviewListLayout">
+       <property name="leftMargin"><number>0</number></property>
+       <property name="topMargin"><number>0</number></property>
+       <property name="rightMargin"><number>0</number></property>
+       <property name="bottomMargin"><number>0</number></property>
+       <item><widget class="QLabel" name="taggingReviewListTitleLabel"><property name="text"><string>待审核词</string></property></widget></item>
+       <item>
+        <widget class="QListWidget" name="taggingReviewListWidget">
+         <property name="minimumSize"><size><width>260</width><height>0</height></size></property>
+         <property name="alternatingRowColors"><bool>true</bool></property>
+        </widget>
+       </item>
+       <item><widget class="QLabel" name="taggingReviewEmptyLabel"><property name="text"><string>本轮 AI 分歧已全部人工确认。</string></property><property name="wordWrap"><bool>true</bool></property></widget></item>
+      </layout>
+     </widget>
+     <widget class="QScrollArea" name="taggingReviewDetailScrollArea">
+      <property name="widgetResizable"><bool>true</bool></property>
+      <widget class="QWidget" name="taggingReviewDetailContent">
+       <layout class="QVBoxLayout" name="taggingReviewDetailLayout">
+        <item>
+         <layout class="QFormLayout" name="taggingReviewBasicFormLayout">
+          <item row="0" column="0"><widget class="QLabel" name="taggingWordLabel"><property name="text"><string>Word</string></property></widget></item>
+          <item row="0" column="1"><widget class="QLabel" name="taggingWordValueLabel"><property name="text"><string>—</string></property><property name="wordWrap"><bool>true</bool></property></widget></item>
+          <item row="1" column="0"><widget class="QLabel" name="taggingMonthLabel"><property name="text"><string>月份</string></property></widget></item>
+          <item row="1" column="1"><widget class="QLabel" name="taggingMonthValueLabel"><property name="text"><string>—</string></property></widget></item>
+          <item row="2" column="0"><widget class="QLabel" name="taggingCategoryLabel"><property name="text"><string>品类</string></property></widget></item>
+          <item row="2" column="1"><widget class="QLabel" name="taggingCategoryValueLabel"><property name="text"><string>—</string></property></widget></item>
+          <item row="3" column="0"><widget class="QLabel" name="taggingTopPhrasesLabel"><property name="text"><string>Top Phrases</string></property></widget></item>
+          <item row="3" column="1"><widget class="QPlainTextEdit" name="taggingTopPhrasesTextEdit"><property name="readOnly"><bool>true</bool></property><property name="maximumHeight"><number>80</number></property></widget></item>
+          <item row="4" column="0"><widget class="QLabel" name="taggingRepresentativeAsinLabel"><property name="text"><string>代表 ASIN</string></property></widget></item>
+          <item row="4" column="1"><widget class="QLabel" name="taggingRepresentativeAsinValueLabel"><property name="text"><string>—</string></property></widget></item>
+          <item row="5" column="0"><widget class="QLabel" name="taggingContextSourceLabel"><property name="text"><string>背景来源</string></property></widget></item>
+          <item row="5" column="1"><widget class="QLabel" name="taggingContextSourceValueLabel"><property name="text"><string>—</string></property></widget></item>
+         </layout>
+        </item>
+        <item><widget class="QLabel" name="taggingProductContextLabel"><property name="text"><string>产品背景摘要</string></property></widget></item>
+        <item><widget class="QPlainTextEdit" name="taggingProductContextTextEdit"><property name="readOnly"><bool>true</bool></property><property name="maximumHeight"><number>140</number></property></widget></item>
+        <item><widget class="QLabel" name="taggingProviderOpinionLabel"><property name="text"><string>模型意见</string></property></widget></item>
+        <item>
+         <layout class="QHBoxLayout" name="taggingProviderPanelsLayout">
+          <item><widget class="QGroupBox" name="openaiProviderGroup"><property name="title"><string>GPT-6 Sol</string></property><layout class="QVBoxLayout" name="openaiProviderLayout"><item><widget class="QLabel" name="openaiProviderLabelValue"><property name="text"><string>—</string></property><property name="wordWrap"><bool>true</bool></property></widget></item><item><widget class="QPlainTextEdit" name="openaiProviderReasonTextEdit"><property name="readOnly"><bool>true</bool></property><property name="maximumHeight"><number>100</number></property></widget></item><item><widget class="QPushButton" name="adoptOpenaiButton"><property name="text"><string>采用此结果</string></property></widget></item></layout></widget></item>
+          <item><widget class="QGroupBox" name="anthropicProviderGroup"><property name="title"><string>Claude Sonnet 5</string></property><layout class="QVBoxLayout" name="anthropicProviderLayout"><item><widget class="QLabel" name="anthropicProviderLabelValue"><property name="text"><string>—</string></property><property name="wordWrap"><bool>true</bool></property></widget></item><item><widget class="QPlainTextEdit" name="anthropicProviderReasonTextEdit"><property name="readOnly"><bool>true</bool></property><property name="maximumHeight"><number>100</number></property></widget></item><item><widget class="QPushButton" name="adoptAnthropicButton"><property name="text"><string>采用此结果</string></property></widget></item></layout></widget></item>
+          <item><widget class="QGroupBox" name="googleProviderGroup"><property name="title"><string>Gemini 3.8 Flash</string></property><layout class="QVBoxLayout" name="googleProviderLayout"><item><widget class="QLabel" name="googleProviderLabelValue"><property name="text"><string>—</string></property><property name="wordWrap"><bool>true</bool></property></widget></item><item><widget class="QPlainTextEdit" name="googleProviderReasonTextEdit"><property name="readOnly"><bool>true</bool></property><property name="maximumHeight"><number>100</number></property></widget></item><item><widget class="QPushButton" name="adoptGoogleButton"><property name="text"><string>采用此结果</string></property></widget></item></layout></widget></item>
+         </layout>
+        </item>
+        <item><widget class="QLabel" name="taggingOpinionSummaryLabel"><property name="text"><string>—</string></property><property name="wordWrap"><bool>true</bool></property></widget></item>
+        <item><widget class="QFrame" name="taggingReviewSeparator"><property name="frameShape"><enum>QFrame::HLine</enum></property><property name="frameShadow"><enum>QFrame::Sunken</enum></property></widget></item>
+        <item><widget class="QLabel" name="taggingHumanDecisionTitleLabel"><property name="text"><string>人工最终标签</string></property><property name="font"><font><bold>true</bold></font></property></widget></item>
+        <item>
+         <layout class="QFormLayout" name="taggingHumanDecisionFormLayout">
+          <item row="0" column="0"><widget class="QLabel" name="taggingHumanLabelLabel"><property name="text"><string>人工标签</string></property></widget></item>
+          <item row="0" column="1"><widget class="QComboBox" name="taggingHumanLabelComboBox"><property name="minimumSize"><size><width>0</width><height>32</height></size></property></widget></item>
+          <item row="1" column="0"><widget class="QLabel" name="taggingHumanReasonLabel"><property name="text"><string>人工原因</string></property></widget></item>
+          <item row="1" column="1"><widget class="QPlainTextEdit" name="taggingHumanReasonTextEdit"><property name="minimumSize"><size><width>0</width><height>80</height></size></property></widget></item>
+         </layout>
+        </item>
+        <item><widget class="QPushButton" name="confirmTaggingReviewButton"><property name="minimumSize"><size><width>0</width><height>34</height></size></property><property name="text"><string>确认人工标签</string></property></widget></item>
+        <item><widget class="QLabel" name="taggingReviewSaveStatusLabel"><property name="text"><string/></property><property name="wordWrap"><bool>true</bool></property></widget></item>
+        <item><spacer name="taggingReviewBottomSpacer"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item>
+       </layout>
+      </widget>
+     </widget>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

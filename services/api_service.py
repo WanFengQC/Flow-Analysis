@@ -34,6 +34,10 @@ class SellerSpriteBusinessError(ApiServiceError):
     """SellerSprite 明确返回了业务失败，通常不适合机械重试。"""
 
 
+class SellerSpriteDataSourcePermissionError(SellerSpriteBusinessError):
+    """当前会话无权访问 relation 数据源，需要刷新 Cookie 后再判定。"""
+
+
 class ApiService:
     """SellerSprite 的统一 HTTP API 客户端。"""
 
@@ -54,6 +58,13 @@ class ApiService:
             "AUTHENTICATION_FAILED",
             "LOGIN_REQUIRED",
             "NOT_LOGIN",
+        }
+    )
+    _DATA_SOURCE_PERMISSION_MESSAGE_FRAGMENTS = frozenset(
+        {
+            "没有权限访问该数据源",
+            "无权限访问该数据源",
+            "no permission to access this data source",
         }
     )
 
@@ -77,6 +88,21 @@ class ApiService:
         """在 AsyncRuntime 的 EventLoop 中关闭 HTTP Client。"""
 
         await self.client.aclose()
+
+    async def replace_cookies(self, cookies: dict[str, str]) -> None:
+        """在同一事件循环内原子切换到刷新后的 Cookie Client。"""
+
+        # relation 数据源权限刷新后，旧 Client 仍持有过期 Cookie。必须先创建
+        # 新 Client 再关闭旧连接池，保证后续重试只会使用新 Cookie。
+        previous_client = self.client
+        self.client = httpx.AsyncClient(
+            base_url=SELLERSPRITE_BASE_URL,
+            cookies=cookies,
+            timeout=REQUEST_TIMEOUT,
+            headers=self._DEFAULT_HEADERS,
+            follow_redirects=False,
+        )
+        await previous_client.aclose()
 
     async def get_relation_sources(
         self,
@@ -244,6 +270,11 @@ class ApiService:
                     f"SellerSprite 认证失效：{message}"
                 )
 
+            if self._is_data_source_permission_error(message):
+                raise SellerSpriteDataSourcePermissionError(
+                    f"SellerSprite 数据源无权限：{message}"
+                )
+
             raise SellerSpriteBusinessError(
                 f"SellerSprite 接口返回错误：{message}"
             )
@@ -264,6 +295,18 @@ class ApiService:
         return (
             isinstance(code, str)
             and code.upper() in cls._AUTHENTICATION_ERROR_CODES
+        )
+
+    @classmethod
+    def _is_data_source_permission_error(cls, message: Any) -> bool:
+        """识别已确认的 relation 数据源权限拒绝业务消息。"""
+
+        if not isinstance(message, str):
+            return False
+        normalized_message = message.strip().casefold()
+        return any(
+            fragment.casefold() in normalized_message
+            for fragment in cls._DATA_SOURCE_PERMISSION_MESSAGE_FRAGMENTS
         )
 
     @staticmethod

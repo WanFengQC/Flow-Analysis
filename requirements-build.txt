@@ -1,0 +1,3 @@
+# 发布构建工具；运行用户不需要单独安装此文件中的工具。
+-r requirements.txt
+PyInstaller==6.22.3

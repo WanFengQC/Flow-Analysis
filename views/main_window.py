@@ -2004,8 +2004,14 @@ class MainWindow(QMainWindow):
 
         self._update_relation_selection_controls()
 
-    def ask_reversing_data_retry(self, asin: str) -> bool:
-        """在 Qt 主线程询问用户是否重新处理当前失败的单个 ASIN。"""
+    def ask_reversing_data_retry(
+        self,
+        asin: str,
+        *,
+        month: str,
+        reason: str,
+    ) -> str:
+        """在 Qt 主线程询问重试、跳过当前 ASIN 或终止分析。"""
 
         dialog = QMessageBox(self)
         dialog.setIcon(QMessageBox.Icon.Warning)
@@ -2013,17 +2019,29 @@ class MainWindow(QMainWindow):
         dialog.setText("获取数据失败")
         dialog.setInformativeText(
             f"ASIN：{asin}\n\n"
-            "已自动尝试 4 次，但仍未获取到有效数据。\n\n"
-            "可能是 SellerSprite 页面尚未完成预热，\n"
-            "或者当前 ASIN / 时间范围暂无数据。"
+            f"当前无数据月份：{month}\n\n"
+            "已自动尝试 4 次；每次均按“预热 → 等待就绪 → 请求数据”执行。\n\n"
+            f"最后失败原因：{reason}\n\n"
+            "可能是 SellerSprite 数据尚未就绪，\n"
+            "或者当前 ASIN / 时间范围暂无数据。\n\n"
+            "跳过只忽略当前月份，保留该 ASIN 在其他月份的真实数据，\n"
+            "并继续分析其余月份和 ASIN。"
         )
         retry_button = dialog.addButton(
             "重试",
             QMessageBox.ButtonRole.AcceptRole,
         )
-        dialog.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        skip_button = dialog.addButton(
+            "跳过该 ASIN",
+            QMessageBox.ButtonRole.DestructiveRole,
+        )
+        dialog.addButton("取消分析", QMessageBox.ButtonRole.RejectRole)
         dialog.exec()
-        return dialog.clickedButton() is retry_button
+        if dialog.clickedButton() is retry_button:
+            return "retry"
+        if dialog.clickedButton() is skip_button:
+            return "skip"
+        return "cancel"
 
     def set_task_summary(self, task_name: str, record_count: int):
         """更新工作区顶部的当前任务说明和数据记录数量。"""

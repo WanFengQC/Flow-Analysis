@@ -1,0 +1,14 @@
+runtime/
+.env
+build/
+dist/
+.venv/
+.idea/
+__pycache__/
+*.py[cod]
+output/
+resources/embedded_runtime_config.json
+*.pem
+*.key
+*.p12
+*.pfx

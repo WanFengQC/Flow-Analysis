@@ -140,6 +140,9 @@ class MainController(QObject):
     tagging_retry_failed = Signal(int, int, str)
     export_succeeded = Signal(str)
     export_failed = Signal(str)
+    # ExportWorker 的成功信号只表示文件已写完；此信号只在 QThread 确认退出
+    # 并释放文件句柄后发出，供测试和退出流程精确同步。
+    export_thread_finished = Signal(bool, str)
     update_available = Signal(object)
     update_check_failed = Signal(str)
     update_downloaded = Signal(object, object)
@@ -224,6 +227,8 @@ class MainController(QObject):
         self.export_thread = None
         self.export_worker = None
         self._export_active = False
+        self._pending_export_success_path: Path | None = None
+        self._pending_export_error: str | None = None
         # 仅保存当前 generation 已成功写出的文件，供“打开 Excel”操作使用；
         # 新分析启动后旧路径立即失效，防止用户误打开上一轮结果。
         self._last_exported_path: Path | None = None
@@ -1143,29 +1148,44 @@ class MainController(QObject):
 
     @Slot(str)
     def _on_export_succeeded(self, output_path: str) -> None:
-        """导出完成后仅恢复按钮与状态，不修改当前 Final Dataset。"""
+        """记录保存结果，等待 QThread 退出后才释放导出生命周期。"""
 
-        self._export_active = False
-        self._last_exported_path = Path(output_path)
-        self.window.set_export_enabled(True)
-        self.window.set_status(f"Excel 已自动保存：{output_path}")
-        self._apply_downloaded_update_if_safe()
+        self._pending_export_success_path = Path(output_path)
+        self._pending_export_error = None
+        self.window.set_status("Excel 已保存，正在结束导出线程...")
 
     @Slot(str)
     def _on_export_failed(self, message: str) -> None:
-        """文件错误只报告导出失败，绝不破坏已完成的分析结果。"""
+        """记录文件失败，等待 QThread 退出后再更新可交互状态。"""
 
-        self._export_active = False
-        self._last_exported_path = None
-        self.window.set_export_enabled(False)
-        self.window.set_status(f"Excel 自动保存失败：{message}")
+        self._pending_export_success_path = None
+        self._pending_export_error = message
+        self.window.set_status("Excel 导出失败，正在结束导出线程...")
 
     @Slot()
     def _on_export_thread_finished(self) -> None:
-        """释放一次性文件导出线程引用，避免长期占用 QThread 对象。"""
+        """在线程结束并释放文件句柄后，才完成一次导出生命周期。"""
+
+        output_path = self._pending_export_success_path
+        error = self._pending_export_error
+        self._export_active = False
+        if output_path is not None and output_path.is_file():
+            self._last_exported_path = output_path
+            self.window.set_export_enabled(True)
+            self.window.set_status(f"Excel 已自动保存：{output_path}")
+            self.export_thread_finished.emit(True, str(output_path))
+            self._apply_downloaded_update_if_safe()
+        else:
+            self._last_exported_path = None
+            self.window.set_export_enabled(False)
+            message = error or "导出线程结束前未生成完整 Excel 文件"
+            self.window.set_status(f"Excel 自动保存失败：{message}")
+            self.export_thread_finished.emit(False, message)
 
         self.export_worker = None
         self.export_thread = None
+        self._pending_export_success_path = None
+        self._pending_export_error = None
 
     def _fail_analysis_job(self, message: str) -> None:
         """失败必须结束当前 job 并恢复唯一启动入口，不伪造完成结果。"""
@@ -1225,6 +1245,8 @@ class MainController(QObject):
         if self._update_download_future is not None:
             self._update_download_future.cancel()
 
+        self._wait_for_export_thread_on_shutdown()
+
         # 退出阶段先请求停止正在运行的打标任务；此处允许有限同步等待，确保
         # Windows Proactor bridge 在 AiService、数据库池和 AsyncRuntime 前结束。
         self._cancel_tagging_pipeline_for_shutdown()
@@ -1258,6 +1280,18 @@ class MainController(QObject):
         except Exception:
             # 退出阶段继续执行后续基础设施清理，避免关闭顺序被单个客户端阻断。
             pass
+
+    def _wait_for_export_thread_on_shutdown(self) -> None:
+        """退出时正常等待 Excel Worker 收尾，禁止强杀仍在写入的线程。"""
+
+        thread = self.export_thread
+        if thread is None or not thread.isRunning():
+            return
+        # Worker.run() 是同步文件 I/O；quit 只在 run 返回后生效。这里不使用
+        # terminate，确保 openpyxl/ZIP 在 Windows 上有机会关闭全部句柄。
+        thread.quit()
+        if not thread.wait(60_000):
+            logger.warning("应用退出时 Excel 导出线程未在 60 秒内结束")
 
     def _cancel_tagging_pipeline_for_shutdown(self) -> None:
         """退出阶段取消 Tagging，并等待可选 Playwright bridge 的清理。"""

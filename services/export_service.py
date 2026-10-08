@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from copy import copy
+import logging
 from numbers import Number
+import os
 from pathlib import Path
 from typing import Any
 
@@ -14,11 +16,18 @@ from openpyxl.utils import get_column_letter
 
 from config.settings import EXPORT_TEMPLATE_PATH
 from services.excel_export.template_support import display_ratio
+from services.excel_export.export_diagnostics import (
+    ExportDiagnostics,
+    MemoryPeakSampler,
+)
 from services.excel_export.workbook_builder import WorkbookBuilder
 
 
 class ExportServiceError(RuntimeError):
     """表示模板、文件系统或工作簿写入失败，供 Controller 展示简短错误。"""
+
+
+logger = logging.getLogger(__name__)
 
 
 class ExportService:
@@ -34,6 +43,12 @@ class ExportService:
     MONTH_SEPARATOR_WIDTH = 1
     DEFAULT_COLUMN_WIDTH = 10.0
     DEFAULT_ROW_HEIGHT = 15.0
+
+    def __init__(self, *, collect_memory_diagnostics: bool = False) -> None:
+        """创建导出服务；峰值内存仅在开发/测试显式启用时采集。"""
+
+        self._collect_memory_diagnostics = collect_memory_diagnostics
+        self.last_diagnostics: ExportDiagnostics | None = None
 
     def export_analysis(
         self,
@@ -51,52 +66,61 @@ class ExportService:
     ) -> Path:
         """以参考模板导出最终结果及当前任务已生成的四类运行时数据。"""
 
+        diagnostics = ExportDiagnostics()
+        self.last_diagnostics = diagnostics
         if not rows:
             raise ExportServiceError("没有可导出的最终分析结果")
         month_rows = self._group_rows_by_month(rows)
         if not month_rows:
             raise ExportServiceError("最终分析结果缺少有效月份")
         output = Path(output_path)
-        self._report_progress(progress_callback, "正在加载 Excel 模板...")
+        memory_sampler: MemoryPeakSampler | None = None
+        if self._collect_memory_diagnostics:
+            memory_sampler = MemoryPeakSampler()
+            memory_sampler.start()
+        workbook = None
+        temporary_output = output.with_name(f".{output.name}.part")
+        export_succeeded = False
         try:
-            workbook = load_workbook(self._template_path())
-        except OSError as exc:
-            raise ExportServiceError(f"无法读取 Excel 模板：{exc}") from exc
-        if self.SHEET_NAME not in workbook.sheetnames:
-            raise ExportServiceError("Excel 模板缺少 SUMMARY_result 工作表")
+            self._report_progress(progress_callback, "正在加载 Excel 模板...")
+            with diagnostics.phase("load_workbook"):
+                workbook = load_workbook(self._template_path())
+            if self.SHEET_NAME not in workbook.sheetnames:
+                raise ExportServiceError("Excel 模板缺少 SUMMARY_result 工作表")
 
-        self._report_progress(progress_callback, "正在生成汇总词表...")
-        worksheet = workbook[self.SHEET_NAME]
-        styles, thin_side, medium_side, show_gridlines = self._capture_template(worksheet)
-        self._clear_template_values(worksheet, show_gridlines)
-        month_order = self._sort_months(month_rows)
-        row_plan = self._build_row_plan(month_rows, month_order)
-        for month_index, month in enumerate(month_order):
-            start_column = 1 + month_index * (self.MONTH_BLOCK_WIDTH + self.MONTH_SEPARATOR_WIDTH)
-            self._write_month_block(
-                worksheet=worksheet,
-                start_column=start_column,
-                month=month,
-                rows=month_rows[month],
-                row_plan=row_plan,
-                styles=styles,
-            )
-        self._apply_all_block_borders(
-            worksheet=worksheet,
-            month_count=len(month_order),
-            row_plan=row_plan,
-            thin_side=thin_side,
-            medium_side=medium_side,
-        )
-        self._set_sheet_dimensions(
-            worksheet=worksheet,
-            month_count=len(month_order),
-            last_row=row_plan["last_row"],
-        )
-        # 四个非 SUMMARY_result Sheet 仅消费 Controller 传入的现有快照；
-        # ExportService 不调用 AI、Amazon、SellerSprite，也不触发业务重算。
-        self._report_progress(progress_callback, "正在生成 RAW 与 ASIN 分表...")
-        try:
+            self._report_progress(progress_callback, "正在生成汇总词表...")
+            with diagnostics.phase("SUMMARY_result_build"):
+                worksheet = workbook[self.SHEET_NAME]
+                styles, thin_side, medium_side, show_gridlines = self._capture_template(worksheet)
+                self._clear_template_values(worksheet, show_gridlines)
+                month_order = self._sort_months(month_rows)
+                row_plan = self._build_row_plan(month_rows, month_order)
+                for month_index, month in enumerate(month_order):
+                    start_column = 1 + month_index * (self.MONTH_BLOCK_WIDTH + self.MONTH_SEPARATOR_WIDTH)
+                    self._write_month_block(
+                        worksheet=worksheet,
+                        start_column=start_column,
+                        month=month,
+                        rows=month_rows[month],
+                        row_plan=row_plan,
+                        styles=styles,
+                    )
+                self._apply_all_block_borders(
+                    worksheet=worksheet,
+                    month_count=len(month_order),
+                    row_plan=row_plan,
+                    thin_side=thin_side,
+                    medium_side=medium_side,
+                )
+                self._set_sheet_dimensions(
+                    worksheet=worksheet,
+                    month_count=len(month_order),
+                    last_row=row_plan["last_row"],
+                )
+            diagnostics.data_rows["SUMMARY_result"] = len(rows)
+            # 四个非 SUMMARY_result Sheet 仅消费 Controller 传入的现有快照；
+            # ExportService 不调用 AI、Amazon、SellerSprite，也不触发业务重算。
+            self._report_progress(progress_callback, "正在生成 RAW 与 ASIN 分表...")
             WorkbookBuilder().populate_runtime_sheets(
                 workbook,
                 analysis_raw=analysis_raw or {},
@@ -104,16 +128,39 @@ class ExportService:
                 analysis_word_results=analysis_word_results or {},
                 analysis_asin_word_results=analysis_asin_word_results or {},
                 final_rows=rows,
+                diagnostics=diagnostics,
             )
+            self._report_progress(progress_callback, "正在压缩并保存 Excel...")
+            output.parent.mkdir(parents=True, exist_ok=True)
+            with diagnostics.phase("workbook_save"):
+                workbook.save(temporary_output)
+            # 只有 ZIP 已完整关闭且保存成功后，才原子替换正式文件，避免失败时
+            # 留下看似可打开的半成品 xlsx。
+            os.replace(temporary_output, output)
+            diagnostics.sheet_count = len(workbook.sheetnames)
+            diagnostics.output_bytes = output.stat().st_size
+            diagnostics.finish()
+            logger.info("Excel export diagnostics: %s", diagnostics.to_log_fields())
+            export_succeeded = True
+            return output
+        except ExportServiceError:
+            raise
         except ValueError as exc:
             raise ExportServiceError(str(exc)) from exc
-        self._report_progress(progress_callback, "正在压缩并保存 Excel...")
-        try:
-            output.parent.mkdir(parents=True, exist_ok=True)
-            workbook.save(output)
         except OSError as exc:
-            raise ExportServiceError(str(exc)) from exc
-        return output
+            raise ExportServiceError(
+                f"Excel 导出失败：{exc}"
+            ) from exc
+        finally:
+            if workbook is not None:
+                workbook.close()
+            if not export_succeeded:
+                try:
+                    temporary_output.unlink(missing_ok=True)
+                except OSError:
+                    logger.warning("未能清理失败导出的临时文件", exc_info=True)
+            if memory_sampler is not None:
+                diagnostics.peak_memory_bytes = memory_sampler.stop()
 
     @staticmethod
     def _report_progress(callback: Callable[[str], None] | None, message: str) -> None:
@@ -305,7 +352,11 @@ class ExportService:
             ("detail_left", "detail_integer", "detail_integer", "detail_mark", "detail_number", "detail_number", "detail_ratio", "detail_percent", "detail_percent", "detail_phrase"), styles,
         )
         if cls._is_number(values[6]):
-            worksheet.cell(row, start_column + 6).fill = PatternFill(
+            ratio_cell = worksheet.cell(row, start_column + 6)
+            # 同一模板 StyleArray 会被多行复用。填写不同占比颜色前必须拆分
+            # 当前单元格的样式，否则后一个词会把前一个词的占比底色一并覆盖。
+            ratio_cell._style = copy(ratio_cell._style)
+            ratio_cell.fill = PatternFill(
                 fill_type="solid", fgColor=cls._percent_fill_hex(float(values[6]))
             )
 

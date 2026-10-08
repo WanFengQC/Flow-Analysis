@@ -7,7 +7,6 @@ from typing import Any
 
 from services.excel_export.template_support import (
     apply_cell_style,
-    clear_sheet_business_values,
     copy_cell_style,
     month_title,
     sort_months,
@@ -74,15 +73,13 @@ class SummaryRawSheetBuilder:
         ]
         title_style = copy_cell_style(worksheet.cell(1, 1))
         headers = self.RAW_HEADERS
-        clear_sheet_business_values(worksheet)
+        self.prepare_template(worksheet)
         month_order = sort_months([month for month, rows in analysis_raw.items() if rows])
         if not month_order:
+            # 空数据 Sheet 仍保持模板的首行合并结构；不能因清理历史数据而
+            # 让工作簿结构在不同导出之间变化。
+            self.restore_empty_template_structure(worksheet)
             return
-
-        # 删除 source_parent_asin 后，月份标题范围随 RAW 区块缩短一列。
-        for merged_range in tuple(worksheet.merged_cells.ranges):
-            if merged_range.min_row == 1 and merged_range.max_row == 1:
-                worksheet.unmerge_cells(str(merged_range))
 
         for month_index, month in enumerate(month_order):
             start_column = 1 + month_index * (self.BLOCK_WIDTH + self.SEPARATOR_WIDTH)
@@ -90,6 +87,36 @@ class SummaryRawSheetBuilder:
                 worksheet, start_column, month, analysis_raw[month], headers,
                 title_style, header_styles, data_styles, column_widths,
             )
+
+    def prepare_template(self, worksheet) -> None:
+        """清理 RAW 历史业务区，只保留表头和一行格式样本。
+
+        参考模板预创建了数十万空白样式单元格。保留它们会让 openpyxl 在
+        Windows 上反复加载、复制、保存无效对象。真实数据行仍由 write()
+        使用同一行样式写入，因此业务布局和实际数据格式不变。
+        """
+
+        for merged_range in tuple(worksheet.merged_cells.ranges):
+            worksheet.unmerge_cells(str(merged_range))
+
+        for coordinate, cell in tuple(worksheet._cells.items()):
+            row, _ = coordinate
+            if row > self.DATA_START_ROW:
+                del worksheet._cells[coordinate]
+                continue
+            cell.value = None
+            cell.comment = None
+            cell.hyperlink = None
+
+    def restore_empty_template_structure(self, worksheet) -> None:
+        """恢复无数据 RAW Sheet 所需的首行合并结构。"""
+
+        worksheet.merge_cells(
+            start_row=1,
+            start_column=1,
+            end_row=1,
+            end_column=self.BLOCK_WIDTH,
+        )
 
     def _write_month_block(self, worksheet, start_column: int, month: str, rows: Sequence[Mapping[str, Any]], headers: Sequence[Any], title_style: Mapping[str, Any], header_styles: Sequence[Mapping[str, Any]], data_styles: Sequence[Mapping[str, Any]], column_widths: Sequence[float | None]) -> None:
         """写入一个独立月份，字段值只取已经生成的 RAW 行。"""

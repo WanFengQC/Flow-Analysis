@@ -60,6 +60,16 @@ class AnalysisService:
         "top10Asin",
     )
 
+    # 来源追溯字段只用于后续选择一个代表产品背景，绝不参与 RESULT 的
+    # 市场公共字段合并，也不改变现有的 Word 指标公式。
+    _SOURCE_ASIN_SUM_FIELDS = (
+        ("calculatedWeeklySearches", "exposure"),
+        ("clicks", "clicks"),
+        ("impressions", "impressions"),
+        ("searches", "searches"),
+    )
+    _SOURCE_ASIN_RANK_FIELD = ("searchesRank", "abaWeeklyRank")
+
     def analyze_keyword_results(
         self,
         keyword_results: list[Mapping[str, Any]],
@@ -151,6 +161,12 @@ class AnalysisService:
                 bucket["matchingKeywordCount"] += 1
                 bucket["_top_phrase_candidates"].append(
                     (weekly_exposure, result_index, keywords)
+                )
+                # 指标与来源统计都只按唯一 token 累计。这样 ``llama llama``
+                # 仍会给 frequency +2，但同一条搜索词不会让来源曝光翻倍。
+                self._accumulate_word_source_asin_stats(
+                    bucket,
+                    keyword_result.get("sourceAsinStats"),
                 )
 
                 if clicks is not None:
@@ -350,6 +366,11 @@ class AnalysisService:
                 grouped_results[group_key] = result
 
             result["_source_asins"].add(source_asin)
+            self._accumulate_result_source_asin_stats(
+                result,
+                source_asin,
+                raw_row,
+            )
             self._merge_public_fields(
                 result,
                 raw_row,
@@ -448,6 +469,45 @@ class AnalysisService:
             diagnostics[month] = month_diagnostics
         return word_results, diagnostics
 
+    def analyze_monthly_asin_word_results(
+        self,
+        monthly_raw: Mapping[str, list[Mapping[str, Any]]],
+        months: list[str],
+        approved_rules: ApprovedNormalizationRules | None = None,
+    ) -> tuple[
+        dict[str, dict[str, list[dict[str, Any]]]],
+        dict[str, dict[str, dict[str, Any]]],
+    ]:
+        """在分析层生成 ASIN 独立 Word Result，供导出使用而非在 Export 重算。"""
+
+        output: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        diagnostics: dict[str, dict[str, dict[str, Any]]] = {}
+        for month in months:
+            rows_by_asin: dict[str, list[Mapping[str, Any]]] = {}
+            for raw_row in monthly_raw.get(month, []):
+                source_asin = str(raw_row.get("source_asin") or "").strip().upper()
+                if source_asin:
+                    rows_by_asin.setdefault(source_asin, []).append(raw_row)
+
+            month_results: dict[str, list[dict[str, Any]]] = {}
+            month_diagnostics: dict[str, dict[str, Any]] = {}
+            for source_asin, asin_raw_rows in rows_by_asin.items():
+                # 这里发生在正式 Analysis 阶段：先构建该 ASIN 的关键词 RESULT，
+                # 再按同一套人工批准规则生成 Word Result；Export 只读取成果。
+                asin_keyword_results, _ = self.aggregate_keyword_results(
+                    asin_raw_rows,
+                )
+                asin_word_results, asin_diagnostics = self.analyze_keyword_results(
+                    asin_keyword_results,
+                    approved_rules=approved_rules,
+                )
+                month_results[source_asin] = asin_word_results
+                month_diagnostics[source_asin] = asin_diagnostics
+
+            output[month] = month_results
+            diagnostics[month] = month_diagnostics
+        return output, diagnostics
+
     @staticmethod
     def _create_word_bucket(word: str) -> dict[str, Any]:
         """创建按首次 token 出现顺序保存的单词统计桶。"""
@@ -463,7 +523,92 @@ class AnalysisService:
             "_ad_weight_sum": 0.0,
             "_ad_weight_base": 0.0,
             "_top_phrase_candidates": [],
+            "_source_asin_stats": {},
         }
+
+    @classmethod
+    def _create_source_asin_stat_bucket(cls) -> dict[str, float | None]:
+        """创建来源 ASIN 元数据桶；未知值必须保留为 None。"""
+
+        return {
+            output_field: None
+            for _, output_field in (
+                *cls._SOURCE_ASIN_SUM_FIELDS,
+                cls._SOURCE_ASIN_RANK_FIELD,
+            )
+        }
+
+    @classmethod
+    def _accumulate_source_asin_stat_value(
+        cls,
+        stats: dict[str, float | None],
+        output_field: str,
+        source_value: Any,
+    ) -> None:
+        """累加可求和的来源字段；无有效值时不以零替代。"""
+
+        numeric_value = cls._as_valid_number(source_value)
+        if numeric_value is None:
+            return
+
+        current_value = stats[output_field]
+        stats[output_field] = (
+            numeric_value
+            if current_value is None
+            else current_value + numeric_value
+        )
+
+    @classmethod
+    def _accumulate_source_asin_rank(
+        cls,
+        stats: dict[str, float | None],
+        source_value: Any,
+    ) -> None:
+        """ABA 周排名只保留所有有效搜索词中的最小值。"""
+
+        numeric_value = cls._as_valid_number(source_value)
+        if numeric_value is None:
+            return
+
+        rank_field = cls._SOURCE_ASIN_RANK_FIELD[1]
+        current_rank = stats[rank_field]
+        stats[rank_field] = (
+            numeric_value
+            if current_rank is None
+            else min(current_rank, numeric_value)
+        )
+
+    @classmethod
+    def _accumulate_word_source_asin_stats(
+        cls,
+        word_bucket: dict[str, Any],
+        keyword_source_stats: Any,
+    ) -> None:
+        """将一个 RESULT 搜索词的来源元数据并入最终 word bucket。"""
+
+        if not isinstance(keyword_source_stats, Mapping):
+            return
+
+        word_source_stats = word_bucket["_source_asin_stats"]
+        for source_asin, source_stats in keyword_source_stats.items():
+            normalized_asin = str(source_asin).strip().upper()
+            if not normalized_asin or not isinstance(source_stats, Mapping):
+                continue
+
+            target_stats = word_source_stats.setdefault(
+                normalized_asin,
+                cls._create_source_asin_stat_bucket(),
+            )
+            for _, output_field in cls._SOURCE_ASIN_SUM_FIELDS:
+                cls._accumulate_source_asin_stat_value(
+                    target_stats,
+                    output_field,
+                    source_stats.get(output_field),
+                )
+            cls._accumulate_source_asin_rank(
+                target_stats,
+                source_stats.get(cls._SOURCE_ASIN_RANK_FIELD[1]),
+            )
 
     @staticmethod
     def _calculate_search_term_weight(
@@ -500,7 +645,9 @@ class AnalysisService:
         ]
 
         total = bucket["total"]
-        bucket["ratio"] = bucket["weight"] / total if total > 0 else None
+        # Total 为真实 0 时，占比按用户展示口径写为 0；只有缺失数据才保留
+        # None。这样 Excel 不会把确定的零值显示成空白。
+        bucket["ratio"] = bucket["weight"] / total if total > 0 else 0.0
 
         natural_weight_base = bucket.pop("_natural_weight_base")
         natural_weight_sum = bucket.pop("_natural_weight_sum")
@@ -517,6 +664,14 @@ class AnalysisService:
             if ad_weight_base > 0
             else None
         )
+        # 保持 ASIN 字符串排序，使诊断和未来 tagging 输入稳定；该字段只作为
+        # 内部来源追溯 metadata，不由主结果表默认展示。
+        bucket["sourceAsinStats"] = {
+            asin: dict(stats)
+            for asin, stats in sorted(
+                bucket.pop("_source_asin_stats").items()
+            )
+        }
         return bucket
 
     @staticmethod
@@ -565,6 +720,7 @@ class AnalysisService:
             "_natural_traffic_has_value": False,
             "_ad_traffic_has_value": False,
             "_source_asins": set(),
+            "sourceAsinStats": {},
         }
         for field_name in cls._PUBLIC_FIELDS:
             result[field_name] = None
@@ -633,6 +789,30 @@ class AnalysisService:
             if weekly_exposure is not None:
                 result["adTrafficExposureBase"] += weekly_exposure
 
+    @classmethod
+    def _accumulate_result_source_asin_stats(
+        cls,
+        result: dict[str, Any],
+        source_asin: str,
+        raw_row: Mapping[str, Any],
+    ) -> None:
+        """在搜索词聚合阶段保留每个来源 ASIN 的轻量选择元数据。"""
+
+        source_stats = result["sourceAsinStats"].setdefault(
+            source_asin,
+            cls._create_source_asin_stat_bucket(),
+        )
+        for source_field, output_field in cls._SOURCE_ASIN_SUM_FIELDS:
+            cls._accumulate_source_asin_stat_value(
+                source_stats,
+                output_field,
+                raw_row.get(source_field),
+            )
+        cls._accumulate_source_asin_rank(
+            source_stats,
+            raw_row.get(cls._SOURCE_ASIN_RANK_FIELD[0]),
+        )
+
     @staticmethod
     def _as_valid_number(value: Any) -> float | None:
         """仅接受有限数值；None、布尔和异常值都保留为未知。"""
@@ -680,3 +860,7 @@ class AnalysisService:
         result.pop("_natural_traffic_has_value")
         result.pop("_ad_traffic_has_value")
         result.pop("_source_asins")
+        result["sourceAsinStats"] = {
+            asin: dict(stats)
+            for asin, stats in sorted(result["sourceAsinStats"].items())
+        }

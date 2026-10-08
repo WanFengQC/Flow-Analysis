@@ -5,8 +5,21 @@ from concurrent.futures import Future
 from enum import Enum, auto
 
 from config.database_settings import DatabaseSettings
+from config.settings import (
+    APP_VERSION,
+    UPDATE_ALLOW_INSECURE_HTTP,
+    UPDATE_CHANNEL,
+    UPDATE_DOWNLOAD_DIR,
+    UPDATE_HTTP_TIMEOUT_SECONDS,
+    UPDATE_MANIFEST_MAX_BYTES,
+    UPDATE_MANIFEST_PUBLIC_KEY_BASE64,
+    UPDATE_MANIFEST_URL,
+    UPDATE_PACKAGE_MAX_BYTES,
+)
 from infrastructure.async_runtime import AsyncRuntime
+from infrastructure.update_service import UpdateService
 from repositories.database import DatabaseManager
+from services.ai_service import AiService
 from services.image_service import ImageService
 
 
@@ -47,6 +60,24 @@ class ApplicationRuntime:
         # 商品图片使用独立、无认证的异步 HTTP Client。
         # 由应用运行时统一持有并在退出阶段关闭。
         self.image_service = ImageService()
+
+        # AI Tagging 使用独立的 UniAPI 长生命周期 HTTP Client。
+        # 缺少 AI 配置不会影响程序启动，AiService 会在真正打标时再明确校验。
+        self.ai_service = AiService()
+
+        # 更新服务只检查已签名的内网发布清单。它不读取业务数据，也不干预
+        # 数据库连接池；实际何时重启仍由 Controller 根据任务状态决定。
+        self.update_service = UpdateService(
+            current_version=APP_VERSION,
+            manifest_url=UPDATE_MANIFEST_URL,
+            channel=UPDATE_CHANNEL,
+            public_key_base64=UPDATE_MANIFEST_PUBLIC_KEY_BASE64,
+            download_dir=UPDATE_DOWNLOAD_DIR,
+            allow_insecure_http=UPDATE_ALLOW_INSECURE_HTTP,
+            timeout_seconds=UPDATE_HTTP_TIMEOUT_SECONDS,
+            manifest_max_bytes=UPDATE_MANIFEST_MAX_BYTES,
+            package_max_bytes=UPDATE_PACKAGE_MAX_BYTES,
+        )
 
         # 当前基础设施运行状态。
         self._state = RuntimeState.STOPPED
@@ -195,7 +226,8 @@ class ApplicationRuntime:
             self._state = RuntimeState.STOPPING
 
         try:
-            # PostgreSQL 连接池和图片 HTTP Client 都运行在 asyncio EventLoop 中，
+            # PostgreSQL 连接池、图片 HTTP Client 与 UniAPI Client 都运行在
+            # asyncio EventLoop 中，
             # 因此必须先通过 AsyncRuntime 提交关闭任务。
             close_future = self.async_runtime.submit(
                 self._shutdown_async_resources()
@@ -220,6 +252,13 @@ class ApplicationRuntime:
 
     async def _shutdown_async_resources(self) -> None:
         """在停止 EventLoop 前关闭全部异步基础设施资源。"""
+
+        # 更新下载如仍在进行会随 EventLoop 取消；随后关闭其唯一 HTTP Client。
+        await self.update_service.aclose()
+
+        # AI Client、图片 Client 都必须在 AsyncRuntime 停止前释放连接。
+        # AI Client 的认证 Header 仅存在内存，关闭时不写入任何日志。
+        await self.ai_service.aclose()
 
         # 图片客户端不携带 SellerSprite 认证信息，但同样必须在 EventLoop 中关闭。
         await self.image_service.aclose()

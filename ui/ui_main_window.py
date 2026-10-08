@@ -3,7 +3,7 @@
 ################################################################################
 ## Form generated from reading UI file 'main_window.ui'
 ##
-## Created by: Qt User Interface Compiler version 6.11.2
+## Created by: Qt User Interface Compiler version 6.8.3
 ##
 ## WARNING! All changes made in this file will be lost when recompiling UI file!
 ################################################################################
@@ -119,6 +119,95 @@ class Ui_MainWindow(object):
 
         self.parameterLayout.addWidget(self.analysisTypeComboBox)
 
+        self.wordFilterPanel = QWidget(self.parameterPanel)
+        self.wordFilterPanel.setObjectName(u"wordFilterPanel")
+        self.wordFilterLayout = QVBoxLayout(self.wordFilterPanel)
+        self.wordFilterLayout.setSpacing(6)
+        self.wordFilterLayout.setObjectName(u"wordFilterLayout")
+        self.wordFilterLayout.setContentsMargins(0, 6, 0, 0)
+        self.wordFilterTitleLabel = QLabel(self.wordFilterPanel)
+        self.wordFilterTitleLabel.setObjectName(u"wordFilterTitleLabel")
+
+        self.wordFilterLayout.addWidget(self.wordFilterTitleLabel)
+
+        self.wordFilterCountLabel = QLabel(self.wordFilterPanel)
+        self.wordFilterCountLabel.setObjectName(u"wordFilterCountLabel")
+
+        self.wordFilterLayout.addWidget(self.wordFilterCountLabel)
+
+        self.wordFilterConditionsWidget = QWidget(self.wordFilterPanel)
+        self.wordFilterConditionsWidget.setObjectName(u"wordFilterConditionsWidget")
+        self.wordFilterConditionsLayout = QGridLayout(self.wordFilterConditionsWidget)
+        self.wordFilterConditionsLayout.setObjectName(u"wordFilterConditionsLayout")
+        self.wordFilterConditionsLayout.setHorizontalSpacing(6)
+        self.wordFilterConditionsLayout.setVerticalSpacing(4)
+        self.wordFilterConditionsLayout.setContentsMargins(0, 0, 0, 0)
+        self.weeklyExposureFilterLabel = QLabel(self.wordFilterConditionsWidget)
+        self.weeklyExposureFilterLabel.setObjectName(u"weeklyExposureFilterLabel")
+
+        self.wordFilterConditionsLayout.addWidget(self.weeklyExposureFilterLabel, 0, 0, 1, 1)
+
+        self.weeklyExposureMinLineEdit = QLineEdit(self.wordFilterConditionsWidget)
+        self.weeklyExposureMinLineEdit.setObjectName(u"weeklyExposureMinLineEdit")
+
+        self.wordFilterConditionsLayout.addWidget(self.weeklyExposureMinLineEdit, 0, 1, 1, 1)
+
+        self.weeklyExposureMaxLineEdit = QLineEdit(self.wordFilterConditionsWidget)
+        self.weeklyExposureMaxLineEdit.setObjectName(u"weeklyExposureMaxLineEdit")
+
+        self.wordFilterConditionsLayout.addWidget(self.weeklyExposureMaxLineEdit, 0, 2, 1, 1)
+
+        self.abaWeeklyRankFilterLabel = QLabel(self.wordFilterConditionsWidget)
+        self.abaWeeklyRankFilterLabel.setObjectName(u"abaWeeklyRankFilterLabel")
+
+        self.wordFilterConditionsLayout.addWidget(self.abaWeeklyRankFilterLabel, 1, 0, 1, 1)
+
+        self.abaWeeklyRankMinLineEdit = QLineEdit(self.wordFilterConditionsWidget)
+        self.abaWeeklyRankMinLineEdit.setObjectName(u"abaWeeklyRankMinLineEdit")
+
+        self.wordFilterConditionsLayout.addWidget(self.abaWeeklyRankMinLineEdit, 1, 1, 1, 1)
+
+        self.abaWeeklyRankMaxLineEdit = QLineEdit(self.wordFilterConditionsWidget)
+        self.abaWeeklyRankMaxLineEdit.setObjectName(u"abaWeeklyRankMaxLineEdit")
+
+        self.wordFilterConditionsLayout.addWidget(self.abaWeeklyRankMaxLineEdit, 1, 2, 1, 1)
+
+        self.monthlySearchesFilterLabel = QLabel(self.wordFilterConditionsWidget)
+        self.monthlySearchesFilterLabel.setObjectName(u"monthlySearchesFilterLabel")
+
+        self.wordFilterConditionsLayout.addWidget(self.monthlySearchesFilterLabel, 2, 0, 1, 1)
+
+        self.monthlySearchesMinLineEdit = QLineEdit(self.wordFilterConditionsWidget)
+        self.monthlySearchesMinLineEdit.setObjectName(u"monthlySearchesMinLineEdit")
+
+        self.wordFilterConditionsLayout.addWidget(self.monthlySearchesMinLineEdit, 2, 1, 1, 1)
+
+        self.monthlySearchesMaxLineEdit = QLineEdit(self.wordFilterConditionsWidget)
+        self.monthlySearchesMaxLineEdit.setObjectName(u"monthlySearchesMaxLineEdit")
+
+        self.wordFilterConditionsLayout.addWidget(self.monthlySearchesMaxLineEdit, 2, 2, 1, 1)
+
+        self.frequencyFilterLabel = QLabel(self.wordFilterConditionsWidget)
+        self.frequencyFilterLabel.setObjectName(u"frequencyFilterLabel")
+
+        self.wordFilterConditionsLayout.addWidget(self.frequencyFilterLabel, 3, 0, 1, 1)
+
+        self.frequencyMinLineEdit = QLineEdit(self.wordFilterConditionsWidget)
+        self.frequencyMinLineEdit.setObjectName(u"frequencyMinLineEdit")
+
+        self.wordFilterConditionsLayout.addWidget(self.frequencyMinLineEdit, 3, 1, 1, 1)
+
+        self.frequencyMaxLineEdit = QLineEdit(self.wordFilterConditionsWidget)
+        self.frequencyMaxLineEdit.setObjectName(u"frequencyMaxLineEdit")
+
+        self.wordFilterConditionsLayout.addWidget(self.frequencyMaxLineEdit, 3, 2, 1, 1)
+
+
+        self.wordFilterLayout.addWidget(self.wordFilterConditionsWidget)
+
+
+        self.parameterLayout.addWidget(self.wordFilterPanel)
+
         self.parameterVerticalSpacer = QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
 
         self.parameterLayout.addItem(self.parameterVerticalSpacer)
@@ -168,11 +257,17 @@ class Ui_MainWindow(object):
 
         self.taskHeaderLayout.addItem(self.taskHeaderHorizontalSpacer)
 
-        self.openNormalizationReviewButton = QPushButton(self.taskHeader)
-        self.openNormalizationReviewButton.setObjectName(u"openNormalizationReviewButton")
-        self.openNormalizationReviewButton.setEnabled(False)
+        self.analysisPipelineStatusLabel = QLabel(self.taskHeader)
+        self.analysisPipelineStatusLabel.setObjectName(u"analysisPipelineStatusLabel")
 
-        self.taskHeaderLayout.addWidget(self.openNormalizationReviewButton)
+        self.taskHeaderLayout.addWidget(self.analysisPipelineStatusLabel)
+
+        self.retryIncompleteTaggingButton = QPushButton(self.taskHeader)
+        self.retryIncompleteTaggingButton.setObjectName(u"retryIncompleteTaggingButton")
+        self.retryIncompleteTaggingButton.setVisible(False)
+        self.retryIncompleteTaggingButton.setEnabled(False)
+
+        self.taskHeaderLayout.addWidget(self.retryIncompleteTaggingButton)
 
         self.refreshButton = QPushButton(self.taskHeader)
         self.refreshButton.setObjectName(u"refreshButton")
@@ -391,10 +486,10 @@ class Ui_MainWindow(object):
 
         self.normalizationToolbarLayout.addWidget(self.normalizationProgressLabel)
 
-        self.applyNormalizationRulesButton = QPushButton(self.normalizationReviewTab)
-        self.applyNormalizationRulesButton.setObjectName(u"applyNormalizationRulesButton")
+        self.finishNormalizationReviewButton = QPushButton(self.normalizationReviewTab)
+        self.finishNormalizationReviewButton.setObjectName(u"finishNormalizationReviewButton")
 
-        self.normalizationToolbarLayout.addWidget(self.applyNormalizationRulesButton)
+        self.normalizationToolbarLayout.addWidget(self.finishNormalizationReviewButton)
 
 
         self.normalizationReviewLayout.addLayout(self.normalizationToolbarLayout)
@@ -515,52 +610,52 @@ class Ui_MainWindow(object):
         self.normalizationConfidenceTitleLabel = QLabel(self.normalizationDetailContent)
         self.normalizationConfidenceTitleLabel.setObjectName(u"normalizationConfidenceTitleLabel")
 
-        self.normalizationMetricsFormLayout.setWidget(0, QFormLayout.ItemRole.LabelRole, self.normalizationConfidenceTitleLabel)
+        self.normalizationMetricsFormLayout.setWidget(0, QFormLayout.LabelRole, self.normalizationConfidenceTitleLabel)
 
         self.normalizationConfidenceValueLabel = QLabel(self.normalizationDetailContent)
         self.normalizationConfidenceValueLabel.setObjectName(u"normalizationConfidenceValueLabel")
 
-        self.normalizationMetricsFormLayout.setWidget(0, QFormLayout.ItemRole.FieldRole, self.normalizationConfidenceValueLabel)
+        self.normalizationMetricsFormLayout.setWidget(0, QFormLayout.FieldRole, self.normalizationConfidenceValueLabel)
 
         self.normalizationImpactTitleLabel = QLabel(self.normalizationDetailContent)
         self.normalizationImpactTitleLabel.setObjectName(u"normalizationImpactTitleLabel")
 
-        self.normalizationMetricsFormLayout.setWidget(1, QFormLayout.ItemRole.LabelRole, self.normalizationImpactTitleLabel)
+        self.normalizationMetricsFormLayout.setWidget(1, QFormLayout.LabelRole, self.normalizationImpactTitleLabel)
 
         self.normalizationImpactValueLabel = QLabel(self.normalizationDetailContent)
         self.normalizationImpactValueLabel.setObjectName(u"normalizationImpactValueLabel")
 
-        self.normalizationMetricsFormLayout.setWidget(1, QFormLayout.ItemRole.FieldRole, self.normalizationImpactValueLabel)
+        self.normalizationMetricsFormLayout.setWidget(1, QFormLayout.FieldRole, self.normalizationImpactValueLabel)
 
         self.normalizationMonthsTitleLabel = QLabel(self.normalizationDetailContent)
         self.normalizationMonthsTitleLabel.setObjectName(u"normalizationMonthsTitleLabel")
 
-        self.normalizationMetricsFormLayout.setWidget(2, QFormLayout.ItemRole.LabelRole, self.normalizationMonthsTitleLabel)
+        self.normalizationMetricsFormLayout.setWidget(2, QFormLayout.LabelRole, self.normalizationMonthsTitleLabel)
 
         self.normalizationMonthsValueLabel = QLabel(self.normalizationDetailContent)
         self.normalizationMonthsValueLabel.setObjectName(u"normalizationMonthsValueLabel")
 
-        self.normalizationMetricsFormLayout.setWidget(2, QFormLayout.ItemRole.FieldRole, self.normalizationMonthsValueLabel)
+        self.normalizationMetricsFormLayout.setWidget(2, QFormLayout.FieldRole, self.normalizationMonthsValueLabel)
 
         self.normalizationFrequencyTitleLabel = QLabel(self.normalizationDetailContent)
         self.normalizationFrequencyTitleLabel.setObjectName(u"normalizationFrequencyTitleLabel")
 
-        self.normalizationMetricsFormLayout.setWidget(3, QFormLayout.ItemRole.LabelRole, self.normalizationFrequencyTitleLabel)
+        self.normalizationMetricsFormLayout.setWidget(3, QFormLayout.LabelRole, self.normalizationFrequencyTitleLabel)
 
         self.normalizationFrequencyValueLabel = QLabel(self.normalizationDetailContent)
         self.normalizationFrequencyValueLabel.setObjectName(u"normalizationFrequencyValueLabel")
 
-        self.normalizationMetricsFormLayout.setWidget(3, QFormLayout.ItemRole.FieldRole, self.normalizationFrequencyValueLabel)
+        self.normalizationMetricsFormLayout.setWidget(3, QFormLayout.FieldRole, self.normalizationFrequencyValueLabel)
 
         self.normalizationMatchingTitleLabel = QLabel(self.normalizationDetailContent)
         self.normalizationMatchingTitleLabel.setObjectName(u"normalizationMatchingTitleLabel")
 
-        self.normalizationMetricsFormLayout.setWidget(4, QFormLayout.ItemRole.LabelRole, self.normalizationMatchingTitleLabel)
+        self.normalizationMetricsFormLayout.setWidget(4, QFormLayout.LabelRole, self.normalizationMatchingTitleLabel)
 
         self.normalizationMatchingValueLabel = QLabel(self.normalizationDetailContent)
         self.normalizationMatchingValueLabel.setObjectName(u"normalizationMatchingValueLabel")
 
-        self.normalizationMetricsFormLayout.setWidget(4, QFormLayout.ItemRole.FieldRole, self.normalizationMatchingValueLabel)
+        self.normalizationMetricsFormLayout.setWidget(4, QFormLayout.FieldRole, self.normalizationMatchingValueLabel)
 
 
         self.normalizationDetailContentLayout.addLayout(self.normalizationMetricsFormLayout)
@@ -710,13 +805,28 @@ class Ui_MainWindow(object):
         self.analysisTypeComboBox.setItemText(0, QCoreApplication.translate("MainWindow", u"Pillow", None))
         self.analysisTypeComboBox.setItemText(1, QCoreApplication.translate("MainWindow", u"Stuffed Animals", None))
 
+        self.wordFilterTitleLabel.setText(QCoreApplication.translate("MainWindow", u"\u8bcd\u7b5b\u9009", None))
+        self.wordFilterCountLabel.setText(QCoreApplication.translate("MainWindow", u"\u539f\u59cb\u8bcd\uff1a0\u3000\u7b5b\u9009\u540e\uff1a0", None))
+        self.weeklyExposureFilterLabel.setText(QCoreApplication.translate("MainWindow", u"\u9884\u4f30\u5468\u66dd\u5149\u91cf", None))
+        self.weeklyExposureMinLineEdit.setPlaceholderText(QCoreApplication.translate("MainWindow", u"\u6700\u5c0f", None))
+        self.weeklyExposureMaxLineEdit.setPlaceholderText(QCoreApplication.translate("MainWindow", u"\u6700\u5927", None))
+        self.abaWeeklyRankFilterLabel.setText(QCoreApplication.translate("MainWindow", u"ABA\u5468\u6392\u540d", None))
+        self.abaWeeklyRankMinLineEdit.setPlaceholderText(QCoreApplication.translate("MainWindow", u"\u6700\u5c0f", None))
+        self.abaWeeklyRankMaxLineEdit.setPlaceholderText(QCoreApplication.translate("MainWindow", u"\u6700\u5927", None))
+        self.monthlySearchesFilterLabel.setText(QCoreApplication.translate("MainWindow", u"\u6708\u641c\u7d22\u91cf", None))
+        self.monthlySearchesMinLineEdit.setPlaceholderText(QCoreApplication.translate("MainWindow", u"\u6700\u5c0f", None))
+        self.monthlySearchesMaxLineEdit.setPlaceholderText(QCoreApplication.translate("MainWindow", u"\u6700\u5927", None))
+        self.frequencyFilterLabel.setText(QCoreApplication.translate("MainWindow", u"\u8bcd\u9891", None))
+        self.frequencyMinLineEdit.setPlaceholderText(QCoreApplication.translate("MainWindow", u"\u6700\u5c0f", None))
+        self.frequencyMaxLineEdit.setPlaceholderText(QCoreApplication.translate("MainWindow", u"\u6700\u5927", None))
         self.startAnalysisButton.setText(QCoreApplication.translate("MainWindow", u"\u5f00\u59cb\u5206\u6790", None))
         self.cancelAnalysisButton.setText(QCoreApplication.translate("MainWindow", u"\u53d6\u6d88", None))
         self.currentTaskLabel.setText(QCoreApplication.translate("MainWindow", u"\u5c1a\u672a\u5f00\u59cb\u5206\u6790", None))
         self.recordCountLabel.setText(QCoreApplication.translate("MainWindow", u"0 \u6761\u6570\u636e", None))
-        self.openNormalizationReviewButton.setText(QCoreApplication.translate("MainWindow", u"\u5f52\u4e00\u5ba1\u6838 (0)", None))
+        self.analysisPipelineStatusLabel.setText(QCoreApplication.translate("MainWindow", u"\u5f53\u524d\u72b6\u6001\uff1a\u672a\u5f00\u59cb", None))
+        self.retryIncompleteTaggingButton.setText(QCoreApplication.translate("MainWindow", u"\u91cd\u8bd5\u5931\u8d25\u9879 (0)", None))
         self.refreshButton.setText(QCoreApplication.translate("MainWindow", u"\u5237\u65b0", None))
-        self.exportButton.setText(QCoreApplication.translate("MainWindow", u"\u5bfc\u51fa Excel", None))
+        self.exportButton.setText(QCoreApplication.translate("MainWindow", u"\u6253\u5f00 Excel", None))
         self.relationEmptyTitleLabel.setText(QCoreApplication.translate("MainWindow", u"\u6682\u65e0\u5173\u8054 ASIN", None))
         self.relationEmptyHintLabel.setText(QCoreApplication.translate("MainWindow", u"\u8f93\u5165 ASIN \u540e\u70b9\u51fb\u67e5\u8be2", None))
         self.relationLoadingLabel.setText(QCoreApplication.translate("MainWindow", u"\u6b63\u5728\u67e5\u8be2\u5173\u8054 ASIN...", None))
@@ -724,13 +834,13 @@ class Ui_MainWindow(object):
         self.selectVisibleRelationButton.setText(QCoreApplication.translate("MainWindow", u"\u5168\u9009", None))
         self.selectedRelationCountLabel.setText(QCoreApplication.translate("MainWindow", u"\u5df2\u9009\u62e9 0 / 0", None))
         self.resultTabWidget.setTabText(self.resultTabWidget.indexOf(self.resultTab), QCoreApplication.translate("MainWindow", u"\u7ed3\u679c", None))
-        self.tableSearchLineEdit.setPlaceholderText(QCoreApplication.translate("MainWindow", u"\u641c\u7d22 ASIN / \u6807\u9898 / \u5173\u952e\u8bcd", None))
+        self.tableSearchLineEdit.setPlaceholderText(QCoreApplication.translate("MainWindow", u"\u641c\u7d22\u6708\u4efd / \u8bcd / \u6807\u7b7e", None))
         self.resetFilterButton.setText(QCoreApplication.translate("MainWindow", u"\u91cd\u7f6e", None))
         self.analysisResultModeLabel.setText(QCoreApplication.translate("MainWindow", u"\u672a\u5f52\u4e00\u9884\u89c8", None))
         self.resultTabWidget.setTabText(self.resultTabWidget.indexOf(self.dataTab), QCoreApplication.translate("MainWindow", u"\u6570\u636e", None))
         self.normalizationSearchLineEdit.setPlaceholderText(QCoreApplication.translate("MainWindow", u"\u641c\u7d22 canonical \u6216 variant...", None))
         self.normalizationProgressLabel.setText(QCoreApplication.translate("MainWindow", u"\u5f85\u5ba1\u6838 0 / 0", None))
-        self.applyNormalizationRulesButton.setText(QCoreApplication.translate("MainWindow", u"\u5e94\u7528\u5df2\u6279\u51c6\u89c4\u5219\u5e76\u91cd\u7b97", None))
+        self.finishNormalizationReviewButton.setText(QCoreApplication.translate("MainWindow", u"\u5b8c\u6210\u5ba1\u6838\u5e76\u5e94\u7528", None))
         self.normalizationResultStatusLabel.setText(QCoreApplication.translate("MainWindow", u"\u6b63\u5f0f\u7ed3\u679c\uff1a\u5c1a\u672a\u751f\u6210", None))
         self.normalizationStatusSeparatorLabel.setText(QCoreApplication.translate("MainWindow", u"|", None))
         self.normalizationPersistenceStatusLabel.setText(QCoreApplication.translate("MainWindow", u"\u5ba1\u6838\u8bb0\u5f55\uff1a\u5df2\u4fdd\u5b58", None))

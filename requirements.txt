@@ -1,0 +1,9 @@
+# 运行时依赖必须显式列出，保证安装包与开发环境使用同一套能力。
+PySide6==6.11.2
+httpx==0.28.1
+psycopg[binary]==3.3.6
+psycopg-pool==3.3.2
+playwright==1.63.0
+openpyxl==3.1.5
+# 自动更新清单使用 Ed25519 签名校验，客户端只内置公钥。
+cryptography==46.0.7

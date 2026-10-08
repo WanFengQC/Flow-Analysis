@@ -2,14 +2,22 @@
 
 from collections.abc import Mapping
 from datetime import date
+from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QEvent, QModelIndex, QTimer, Qt, Signal
-from PySide6.QtGui import QKeySequence, QShortcut, QStandardItem, QStandardItemModel
+from PySide6.QtCore import QEvent, QModelIndex, QSettings, QTimer, Qt, QUrl, Signal
+from PySide6.QtGui import (
+    QDesktopServices,
+    QKeySequence,
+    QShortcut,
+    QStandardItem,
+    QStandardItemModel,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QGroupBox,
@@ -34,6 +42,8 @@ from views.relation_product_card import (
 from views.normalization_candidate_list_model import (
     NormalizationCandidateListModel,
 )
+from views.tagging_review_dialog import TaggingReviewDialog
+from views.final_analysis_table_model import FinalAnalysisTableModel
 
 
 class MultiSelectMonthComboBox(QComboBox):
@@ -201,7 +211,9 @@ class MultiSelectMonthComboBox(QComboBox):
 
 
 class NormalizationReviewDialog(QDialog):
-    """承载单实例审核界面；关闭时仅隐藏，不清理任何审核内存状态。"""
+    """承载单实例审核界面，并把关闭意图交给 Controller 决定。"""
+
+    close_requested = Signal()
 
     def __init__(self, parent: QWidget) -> None:
         """初始化可缩放、非模态的独立审核窗口。"""
@@ -214,6 +226,12 @@ class NormalizationReviewDialog(QDialog):
         self.resize(1200, 760)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
 
+    def closeEvent(self, event) -> None:
+        """关闭 X 代表结束本轮审核，确认和清理由 Controller 统一处理。"""
+
+        event.ignore()
+        self.close_requested.emit()
+
 
 class MainWindow(QMainWindow):
     """Flow Analysis 主窗口，仅负责界面展示、输入读取和状态更新。"""
@@ -223,9 +241,20 @@ class MainWindow(QMainWindow):
     normalization_approve_requested = Signal(str, str)
     normalization_reject_requested = Signal(str)
     normalization_skip_requested = Signal(str)
-    normalization_apply_requested = Signal()
+    normalization_review_finish_requested = Signal()
+    normalization_review_close_requested = Signal()
     normalization_persistence_retry_requested = Signal()
     normalization_candidate_selected = Signal(str)
+    # Excel 由完成分析后的 Controller 自动保存；该信号只请求打开本轮文件。
+    open_export_requested = Signal()
+    # 恢复动作只面向当前 Final Result 的 INCOMPLETE，不是第二个分析入口。
+    incomplete_tagging_retry_requested = Signal()
+    # “取消”属于整个 Analysis Job，View 不直接取消任何具体 Service。
+    analysis_cancel_requested = Signal()
+    # AI 标签审核的最终保存仍由 Controller 决定；View 只转发明确动作。
+    tagging_human_review_requested = Signal(str, str, str)
+    tagging_review_close_requested = Signal()
+    tagging_review_discard_requested = Signal()
     _ALL_VARIATION_FILTER_VALUE = "全部"
 
     def __init__(self):
@@ -254,6 +283,7 @@ class MainWindow(QMainWindow):
         self._relation_query_available = False
         self._relation_query_running = False
         self._relation_preparation_running = False
+        self._analysis_job_running = False
         # 审核候选只保存 Controller 提供的当前任务内存引用；View 只读取、
         # 筛选和展示，绝不直接写入 decision 或 approvedCanonical。
         self._normalization_candidates: list[Mapping[str, Any]] = []
@@ -267,15 +297,30 @@ class MainWindow(QMainWindow):
         self._expanded_normalization_evidence: set[tuple[str, str]] = set()
         # 重算期间仅锁定会改变审核快照的控件；筛选、列表查看和滚动仍可用。
         self._normalization_review_editable = True
+        # 最终表格只持有 Controller 交付的展示快照；搜索和排序不会回写
+        # Controller 的 _final_analysis_rows，也不会重算任何业务字段。
+        self._final_analysis_table_model: FinalAnalysisTableModel | None = None
+        self._final_analysis_sort_column: int | None = None
+        self._final_analysis_sort_order = Qt.SortOrder.AscendingOrder
+        # 仅用于关闭确认文案；实际待审核对象只由 Controller 保存。
+        self._tagging_review_pending_count = 0
+        # QSettings 是桌面端界面偏好存储，只保存用户选择的文件夹，不保存
+        # 分析结果、数据库凭据或任何业务数据。
+        self._user_settings = QSettings("Flow Analysis", "Flow Analysis")
+        # 自动更新开始后短暂显示的应用内进度弹窗。安装进度由独立的
+        # Inno Setup 安装器继续展示；这里仅负责避免主窗口突然退出。
+        self._update_installation_dialog: QDialog | None = None
 
         self._setup_month_selector()
         self._setup_workspace()
         self._setup_status_bar()
         self._setup_relation_query()
+        self._setup_word_filter()
         self._setup_normalization_review()
+        self._setup_tagging_review()
 
     def _setup_month_selector(self):
-        """创建多选时间范围控件，提供最近30天及 2024-01 起的月份。"""
+        """创建多选时间范围控件，提供最近30天及截至上月的自然月。"""
 
         self.month_selector = MultiSelectMonthComboBox(
             self.ui.parameterPanel
@@ -298,11 +343,14 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _recent_months() -> list[str]:
-        """从当前月份倒序生成至 2024-01 的月份。"""
+        """从上个月倒序生成至 2024-01，避免展示尚未完整的当月数据。"""
 
         today = date.today()
         year = today.year
-        month = today.month
+        month = today.month - 1
+        if month == 0:
+            year -= 1
+            month = 12
         months = []
 
         while (year, month) >= (2024, 1):
@@ -320,7 +368,12 @@ class MainWindow(QMainWindow):
         self.ui.mainSplitter.setStretchFactor(0, 0)
         self.ui.mainSplitter.setStretchFactor(1, 1)
         self.ui.mainSplitter.setSizes([300, 900])
-        self.ui.resultTableView.setSortingEnabled(True)
+        # 初始顺序必须沿用正式 Word Result。用户点击列头时才触发 View 内部
+        # 排序，避免 QTableView 自动排序改写首次展示顺序。
+        self.ui.resultTableView.setSortingEnabled(False)
+        self.ui.resultTableView.horizontalHeader().sectionClicked.connect(
+            self._sort_final_analysis_table
+        )
         self.ui.resultTableView.horizontalHeader().setStretchLastSection(
             True
         )
@@ -361,8 +414,78 @@ class MainWindow(QMainWindow):
         self.ui.startAnalysisButton.clicked.connect(
             self._emit_analysis_preparation_requested
         )
+        self.ui.cancelAnalysisButton.clicked.connect(
+            self.analysis_cancel_requested.emit
+        )
+        self.ui.exportButton.clicked.connect(self.open_export_requested.emit)
+        self.ui.retryIncompleteTaggingButton.clicked.connect(
+            self.incomplete_tagging_retry_requested.emit
+        )
+        self.ui.tableSearchLineEdit.textChanged.connect(
+            self._filter_final_analysis_table
+        )
+        self.ui.resetFilterButton.clicked.connect(
+            self._reset_final_analysis_table_filter
+        )
         self.show_relation_empty()
         self.set_relation_query_available(False)
+
+    def _setup_word_filter(self) -> None:
+        """初始化始终预设、并在 Word Analysis 后自动生效的词筛选。"""
+
+        self.ui.wordFilterConditionsWidget.setEnabled(True)
+        self.ui.wordFilterCountLabel.setText("筛选条件将在词频分析完成后自动应用")
+        # 词筛选始终预设在左侧配置栏，用户可在开始分析前配置四组范围。
+        self.ui.wordFilterPanel.setVisible(True)
+
+    def show_word_filter(
+        self,
+        _monthly_word_results: Mapping[str, list[Mapping[str, Any]]],
+        *,
+        total_count: int,
+    ) -> None:
+        """显示当前 Word Analysis 的筛选入口，但不在 View 内进行业务筛选。"""
+
+        self.set_word_filter_counts(total_count, total_count)
+        self.ui.wordFilterPanel.setVisible(True)
+
+    def word_filter_conditions(self) -> dict[str, Any]:
+        """读取可选上下限；数字校验由纯 WordFilterService 统一完成。"""
+
+        controls = {
+            "weeklyExposure": (
+                "weeklyExposureMinLineEdit",
+                "weeklyExposureMaxLineEdit",
+            ),
+            "abaWeeklyRank": (
+                "abaWeeklyRankMinLineEdit",
+                "abaWeeklyRankMaxLineEdit",
+            ),
+            "monthlySearches": (
+                "monthlySearchesMinLineEdit",
+                "monthlySearchesMaxLineEdit",
+            ),
+            "frequency": ("frequencyMinLineEdit", "frequencyMaxLineEdit"),
+        }
+        conditions: dict[str, Any] = {
+            # 没有额外开关或按钮；空范围即表示该字段不参与本轮自动筛选。
+            "enabled": True,
+        }
+        for metric, (minimum_name, maximum_name) in controls.items():
+            conditions[f"{metric}Min"] = getattr(
+                self.ui, minimum_name
+            ).text().strip()
+            conditions[f"{metric}Max"] = getattr(
+                self.ui, maximum_name
+            ).text().strip()
+        return conditions
+
+    def set_word_filter_counts(self, total_count: int, filtered_count: int) -> None:
+        """只展示 Controller 提供的计数，不由 UI 自行推导结果。"""
+
+        self.ui.wordFilterCountLabel.setText(
+            f"原始词：{total_count}　筛选后：{filtered_count}"
+        )
 
     def _setup_normalization_review(self) -> None:
         """初始化归一候选审核页面的 View 级筛选、列表与交互。"""
@@ -403,8 +526,8 @@ class MainWindow(QMainWindow):
         self.ui.skipNormalizationButton.clicked.connect(
             self._request_normalization_skip
         )
-        self.ui.applyNormalizationRulesButton.clicked.connect(
-            self._request_normalization_apply
+        self.ui.finishNormalizationReviewButton.clicked.connect(
+            self.normalization_review_finish_requested.emit
         )
         self.ui.retryNormalizationPersistenceButton.clicked.connect(
             self.normalization_persistence_retry_requested.emit
@@ -458,6 +581,9 @@ class MainWindow(QMainWindow):
         dialog_layout = QVBoxLayout(self._normalization_review_dialog)
         dialog_layout.setContentsMargins(0, 0, 0, 0)
         dialog_layout.addWidget(self.ui.normalizationReviewTab)
+        # QTabWidget.removeTab() 会隐藏被移出的页面；重新放入 Dialog 后必须
+        # 显式恢复可见性，否则 Dialog 只剩空白窗口外壳。
+        self.ui.normalizationReviewTab.show()
 
         # Splitter 是唯一可伸缩区域；紧凑状态行移动到 Dialog 底部。
         review_layout = self.ui.normalizationReviewLayout
@@ -468,8 +594,8 @@ class MainWindow(QMainWindow):
         review_layout.setStretch(1, 1)
         review_layout.setStretch(2, 0)
 
-        self.ui.openNormalizationReviewButton.clicked.connect(
-            self.show_normalization_review
+        self._normalization_review_dialog.close_requested.connect(
+            self.normalization_review_close_requested.emit
         )
 
     def show_normalization_review(self) -> None:
@@ -481,6 +607,162 @@ class MainWindow(QMainWindow):
         self._normalization_review_dialog.raise_()
         self._normalization_review_dialog.activateWindow()
 
+    def confirm_discard_normalization_review(self, pending_count: int) -> bool:
+        """确认关闭时销毁尚未处理的当前运行时归一候选。"""
+
+        if pending_count <= 0:
+            return True
+        message_box = QMessageBox(
+            QMessageBox.Icon.Warning,
+            "结束本次归一审核",
+            f"仍有 {pending_count} 条归一候选未处理。\n\n"
+            "关闭并继续后，未处理候选及其证据、历史参考、筛选和选择状态"
+            "将立即从内存中销毁，无法重新打开本轮审核；"
+            "已经保存的人工审核决定不会受影响。",
+            parent=self._normalization_review_dialog,
+        )
+        cancel_button = message_box.addButton(
+            "取消",
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        continue_button = message_box.addButton(
+            "关闭并继续",
+            QMessageBox.ButtonRole.DestructiveRole,
+        )
+        message_box.setDefaultButton(cancel_button)
+        message_box.exec()
+        return message_box.clickedButton() is continue_button
+
+    def close_normalization_review_after_discard(self) -> None:
+        """隐藏已清空的审核窗口，禁止重新打开当前 generation。"""
+
+        self._normalization_review_dialog.hide()
+
+    def _setup_tagging_review(self) -> None:
+        """创建独立的标签分歧审核 Dialog，不复用归一审核关闭语义。"""
+
+        self._tagging_review_dialog = TaggingReviewDialog(self)
+        self._tagging_review_dialog.save_requested.connect(
+            self.tagging_human_review_requested.emit
+        )
+        self._tagging_review_dialog.close_requested.connect(
+            self.tagging_review_close_requested.emit
+        )
+
+    def set_tagging_review_items(
+        self,
+        items: list,
+        total_count: int,
+    ) -> None:
+        """将 Controller 的本轮运行时快照交给 Dialog 显示。"""
+
+        self._tagging_review_pending_count = len(items)
+        self._tagging_review_dialog.set_review_items(items, total_count)
+
+    def show_tagging_review(self) -> None:
+        """仅由 Controller 在本轮存在 DISAGREEMENT 时自动打开。"""
+
+        if self._tagging_review_pending_count <= 0:
+            return
+        self._tagging_review_dialog.show()
+        self._tagging_review_dialog.raise_()
+        self._tagging_review_dialog.activateWindow()
+
+    def set_tagging_review_save_status(
+        self,
+        item_id: str,
+        message: str,
+    ) -> None:
+        """由 Controller 转发异步保存状态，Dialog 不观察数据库 Future。"""
+
+        self._tagging_review_dialog.set_save_status(item_id, message)
+
+    def show_tagging_review_save_failed(self, item_id: str) -> None:
+        """显示保存失败提示，并保留该条审核项供用户再次确认。"""
+
+        self._tagging_review_dialog.show_save_failed(item_id)
+
+    def confirm_discard_tagging_review(
+        self,
+        pending_count: int,
+        *,
+        for_new_generation: bool = False,
+        for_exit: bool = False,
+    ) -> bool:
+        """明确说明关闭、新任务或退出都会销毁未保存的运行时分歧。"""
+
+        if pending_count <= 0:
+            return True
+        if for_new_generation:
+            title = "开始新的 AI 标签任务"
+            action_text = "放弃并开始新任务"
+            leading_text = "开始新分析将销毁这些待审核数据"
+        elif for_exit:
+            title = "退出 Flow Analysis"
+            action_text = "退出并销毁"
+            leading_text = "退出后这些待审核数据将被销毁"
+        else:
+            title = "关闭 AI 标签审核"
+            action_text = "关闭并销毁"
+            leading_text = "关闭后这些待审核数据将立即从内存中销毁"
+
+        message = (
+            f"仍有 {pending_count} 个 AI 分歧词尚未完成人工审核。\n\n"
+            f"{leading_text}，且不会写入数据库，无法恢复；"
+            "已成功保存的人工标签不会受影响。"
+        )
+        message_box = QMessageBox(
+            QMessageBox.Icon.Warning,
+            title,
+            message,
+            parent=self._tagging_review_dialog,
+        )
+        cancel_button = message_box.addButton(
+            "取消",
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        discard_button = message_box.addButton(
+            action_text,
+            QMessageBox.ButtonRole.DestructiveRole,
+        )
+        message_box.setDefaultButton(cancel_button)
+        message_box.exec()
+        return message_box.clickedButton() is discard_button
+
+    def close_tagging_review_after_discard(self) -> None:
+        """清除 Dialog 的显示缓存；正式工作集由 Controller 同步清理。"""
+
+        self._tagging_review_pending_count = 0
+        self._tagging_review_dialog.reset_runtime_view()
+
+    def confirm_finish_normalization_review(
+        self,
+        *,
+        pending_count: int,
+        skipped_count: int,
+        saving_count: int,
+        unsaved_count: int,
+    ) -> bool:
+        """确认结束审核，并明确说明待审核内存数据不可恢复。"""
+
+        details = [f"仍有 {pending_count} 条待审核候选"]
+        if skipped_count:
+            details.append(f"{skipped_count} 条已跳过候选")
+        if saving_count:
+            details.append(f"{saving_count} 条审核记录仍在保存")
+        elif unsaved_count:
+            details.append(f"{unsaved_count} 条审核记录尚未保存")
+        message = "；".join(details)
+        result = QMessageBox.question(
+            self._normalization_review_dialog,
+            "结束本次归一审核",
+            f"{message}。\n\n结束后待审核候选及其证据将从内存清除，无法恢复；已保存的人工审计记录不会删除。",
+            QMessageBox.StandardButton.Cancel
+            | QMessageBox.StandardButton.Yes,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return result == QMessageBox.StandardButton.Yes
+
     def _populate_normalization_filter_controls(self) -> None:
         """填充审核页固定筛选项，内部值始终保持正式 reason/decision 字符串。"""
 
@@ -488,10 +770,6 @@ class MainWindow(QMainWindow):
         self.ui.normalizationReasonComboBox.addItem(
             "短语变体",
             "PHRASE_TOKEN_VARIANT",
-        )
-        self.ui.normalizationReasonComboBox.addItem(
-            "短语概念 Seed",
-            "PHRASE_CONCEPT_SEED",
         )
         self.ui.normalizationReasonComboBox.addItem(
             "格式变体",
@@ -568,17 +846,10 @@ class MainWindow(QMainWindow):
             self._build_normalization_conflict_index()
         )
         self._expanded_normalization_evidence.clear()
-        self.ui.openNormalizationReviewButton.setText(
-            f"归一审核 ({len(self._normalization_candidates)})"
-        )
-        self.ui.openNormalizationReviewButton.setEnabled(
-            bool(self._normalization_candidates)
-        )
         self._normalization_current_candidate_id = None
         self._normalization_next_candidate_id = None
-        self.ui.applyNormalizationRulesButton.setEnabled(
-            self._normalization_review_editable
-            and bool(self._normalization_candidates)
+        self.ui.finishNormalizationReviewButton.setEnabled(
+            bool(self._normalization_candidates)
         )
         self._refresh_normalization_review()
         if not self._normalization_candidates:
@@ -1025,8 +1296,6 @@ class MainWindow(QMainWindow):
                     variant,
                     detail,
                     candidate.get("evidence", []),
-                    "PHRASE_CONCEPT_SEED"
-                    in candidate.get("reasonTypes", []),
                 )
             )
 
@@ -1037,16 +1306,10 @@ class MainWindow(QMainWindow):
         variant: str,
         detail: Mapping[str, Any],
         fallback_evidence: object,
-        is_phrase_concept: bool,
     ) -> QWidget:
         """创建单个 variant 的只读统计、月度分布和可展开关键词证据。"""
 
-        group_title = (
-            f"原始短语：{variant}"
-            if is_phrase_concept
-            else f"Variant {index}：{variant}"
-        )
-        group = QGroupBox(group_title)
+        group = QGroupBox(f"Variant {index}：{variant}")
         group_layout = QVBoxLayout(group)
         statistic_label = QLabel(
             "频次："
@@ -1248,18 +1511,14 @@ class MainWindow(QMainWindow):
             self._normalization_current_candidate_id
         )
 
-    def _request_normalization_apply(self) -> None:
-        """将整批已审核状态交给 Controller，View 不参与规则编译或重算。"""
-
-        if self._normalization_review_editable:
-            self.normalization_apply_requested.emit()
-
     def set_normalization_review_editable(self, editable: bool) -> None:
         """切换审核写操作；筛选、搜索、查看与滚动始终不受影响。"""
 
         self._normalization_review_editable = editable
-        self.ui.applyNormalizationRulesButton.setEnabled(
-            editable and bool(self._normalization_candidates)
+        # 结束审核本身不改变 candidate 的 decision，因此重算锁定期间仍由
+        # Controller 决定是否允许；当前候选为空时始终禁用。
+        self.ui.finishNormalizationReviewButton.setEnabled(
+            bool(self._normalization_candidates)
         )
         current_candidate = self._normalization_candidates_by_id.get(
             self._normalization_current_candidate_id or ""
@@ -1281,6 +1540,212 @@ class MainWindow(QMainWindow):
         """在数据页标明当前表格应被解释为预览、正式或旧版正式结果。"""
 
         self.ui.analysisResultModeLabel.setText(mode)
+
+    def tagging_category_key(self) -> str:
+        """将固定 UI 品类文本映射为稳定缓存 key，拒绝文本直接下传。"""
+
+        category_mapping = {
+            "Pillow": "pillow",
+            "Stuffed Animals": "stuffed_animals",
+        }
+        category_key = category_mapping.get(
+            self.ui.analysisTypeComboBox.currentText()
+        )
+        if category_key is None:
+            raise ValueError("当前打标品类无有效 category_key")
+        return category_key
+
+    def analysis_category_display_name(self) -> str:
+        """返回当前 UI 已确认的品类显示名，仅用于导出文件默认名。"""
+
+        return self.ui.analysisTypeComboBox.currentText().strip() or "analysis"
+
+    def ensure_export_directory(self) -> str | None:
+        """返回持久化的导出目录；首次自动导出时请求用户选择一次。"""
+
+        configured_directory = self._user_settings.value(
+            "export/default_directory",
+            "",
+            type=str,
+        )
+        if configured_directory:
+            configured_path = Path(configured_directory)
+            if configured_path.is_dir():
+                return str(configured_path)
+
+        initial_directory = (
+            str(Path.home())
+            if not configured_directory
+            else str(Path(configured_directory).parent)
+        )
+        selected_directory = QFileDialog.getExistingDirectory(
+            self,
+            "选择默认 Excel 导出文件夹",
+            initial_directory,
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if not selected_directory:
+            return None
+
+        selected_path = Path(selected_directory)
+        if not selected_path.is_dir():
+            return None
+
+        # 用户确认的目录仅在第一次选择或原目录失效后才更新；后续完成分析
+        # 直接复用该配置，不再弹出另存为窗口。
+        self._user_settings.setValue(
+            "export/default_directory",
+            str(selected_path),
+        )
+        self._user_settings.sync()
+        return str(selected_path)
+
+    def open_exported_file(self, output_path: str) -> bool:
+        """请求系统默认程序打开已成功自动保存的 Excel 文件。"""
+
+        path = Path(output_path)
+        if not path.is_file():
+            return False
+        return QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve())))
+
+    def request_application_exit(self) -> None:
+        """供 Controller 在独立更新器已启动后请求 Qt 安全退出。"""
+
+        application = QApplication.instance()
+        if application is not None:
+            # 自动更新弹窗至少保留一个短暂事件循环，让用户能明确看到
+            # "正在安装更新"，再交由独立安装器展示持续的安装进度。
+            delay_ms = 450 if self._update_installation_dialog is not None else 0
+            QTimer.singleShot(delay_ms, application.quit)
+
+    def show_update_installation_progress(self, version: str) -> None:
+        """显示更新交接提示，避免主程序退出被误认为异常关闭。"""
+
+        if self._update_installation_dialog is None:
+            dialog = QDialog(self)
+            dialog.setObjectName("updateInstallationProgressDialog")
+            dialog.setWindowTitle("正在安装更新")
+            dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+            # 更新器已经启动后不允许在这里取消；真正的安装进度会在主程序
+            # 退出后由 Inno Setup 标准窗口持续显示。
+            dialog.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
+            dialog.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
+            dialog.setMinimumWidth(440)
+
+            layout = QVBoxLayout(dialog)
+            layout.setContentsMargins(24, 22, 24, 22)
+            layout.setSpacing(12)
+
+            title_label = QLabel("正在准备安装更新", dialog)
+            title_label.setObjectName("updateInstallationTitleLabel")
+            title_label.setStyleSheet("font-size: 16px; font-weight: 600;")
+            layout.addWidget(title_label)
+
+            message_label = QLabel(dialog)
+            message_label.setObjectName("updateInstallationMessageLabel")
+            message_label.setWordWrap(True)
+            layout.addWidget(message_label)
+
+            progress_bar = QProgressBar(dialog)
+            progress_bar.setObjectName("updateInstallationProgressBar")
+            # 交接阶段无法估算安装时间，使用 Qt 标准不确定进度动画。
+            progress_bar.setRange(0, 0)
+            progress_bar.setTextVisible(False)
+            layout.addWidget(progress_bar)
+
+            self._update_installation_dialog = dialog
+
+        message_label = self._update_installation_dialog.findChild(
+            QLabel,
+            "updateInstallationMessageLabel",
+        )
+        if message_label is not None:
+            message_label.setText(
+                f"更新包 {version} 已下载完成。应用将自动关闭，随后显示"
+                "安装进度。请勿手动重新打开 Flow Analysis。"
+            )
+        self._update_installation_dialog.show()
+        self._update_installation_dialog.raise_()
+        self._update_installation_dialog.activateWindow()
+        # 确保短暂交接窗口在 QTimer 请求退出前完成一次绘制。
+        QApplication.processEvents()
+
+    def set_analysis_pipeline_status(self, status: str) -> None:
+        """展示整个 Analysis Job 的当前阶段，不拆分独立 AI 顶层状态。"""
+
+        self.ui.analysisPipelineStatusLabel.setText(f"当前状态：{status}")
+
+    def set_analysis_job_running(self, running: bool) -> None:
+        """锁定或恢复唯一“开始分析”入口，并让取消覆盖完整流水线。"""
+
+        self._analysis_job_running = running
+        self.ui.startAnalysisButton.setEnabled(not running)
+        self.ui.cancelAnalysisButton.setEnabled(running)
+        self.analysis_progress_bar.setVisible(running)
+        # 完成、失败或取消时只隐藏进度条，不能在阶段结束时偷偷归零；下一轮
+        # Analysis Job 会由 Controller 的唯一重置入口显式从 0 开始。
+
+    def set_final_analysis_rows(
+        self,
+        rows: list[Mapping[str, Any]],
+    ) -> None:
+        """接收唯一 Final Analysis Dataset 并建立只读 QTableView Model。"""
+
+        model = FinalAnalysisTableModel(rows, self)
+        self._final_analysis_table_model = model
+        self._final_analysis_sort_column = None
+        self._final_analysis_sort_order = Qt.SortOrder.AscendingOrder
+        self.set_result_model(model)
+        for index, column in enumerate(model.columns):
+            self.ui.resultTableView.setColumnHidden(
+                index,
+                not column.default_visible,
+            )
+        self._filter_final_analysis_table(
+            self.ui.tableSearchLineEdit.text()
+        )
+
+    def clear_final_analysis_rows(self) -> None:
+        """清空旧 generation 的最终表格快照与用户筛选文本。"""
+
+        self.ui.tableSearchLineEdit.clear()
+        self.set_final_analysis_rows([])
+        self.set_analysis_result_mode("未生成最终结果")
+
+    def update_final_analysis_row(self, row: Mapping[str, Any]) -> None:
+        """在人工标签保存后，仅刷新匹配的最终表格行。"""
+
+        if self._final_analysis_table_model is not None:
+            self._final_analysis_table_model.update_final_row(row)
+
+    def _filter_final_analysis_table(self, text: str) -> None:
+        """把搜索条件交给 Model 做纯展示过滤。"""
+
+        if self._final_analysis_table_model is not None:
+            self._final_analysis_table_model.set_filter_text(text)
+
+    def _reset_final_analysis_table_filter(self) -> None:
+        """清空 Data Tab 搜索条件，恢复全部 Final Analysis 行。"""
+
+        self.ui.tableSearchLineEdit.clear()
+
+    def _sort_final_analysis_table(self, column: int) -> None:
+        """用户点击列头后才在 Model 内重排列，不影响 Controller 原始顺序。"""
+
+        model = self._final_analysis_table_model
+        if model is None:
+            return
+        if self._final_analysis_sort_column == column:
+            self._final_analysis_sort_order = (
+                Qt.SortOrder.DescendingOrder
+                if self._final_analysis_sort_order
+                == Qt.SortOrder.AscendingOrder
+                else Qt.SortOrder.AscendingOrder
+            )
+        else:
+            self._final_analysis_sort_column = column
+            self._final_analysis_sort_order = Qt.SortOrder.AscendingOrder
+        model.sort(column, self._final_analysis_sort_order)
 
     def set_normalization_persistence_status(self, status: str) -> None:
         """展示 Controller 提供的审核持久化状态，并仅在失败/未保存时开放重试。"""
@@ -1380,7 +1845,8 @@ class MainWindow(QMainWindow):
 
         return {
             "PHRASE_TOKEN_VARIANT": "短语变体",
-            "PHRASE_CONCEPT_SEED": "短语概念 Seed",
+            # 仅用于读取旧审计记录；新候选和筛选项不再提供该类型。
+            "PHRASE_CONCEPT_SEED": "旧版短语概念候选",
             "COMPACT_SIGNATURE_MATCH": "格式变体",
             "KNOWN_WORD_ALIAS_VARIANT": "已有词形规则",
             "CHARACTER_SIMILARITY": "字符相似",
@@ -1458,7 +1924,7 @@ class MainWindow(QMainWindow):
     def _emit_analysis_preparation_requested(self):
         """将“开始分析”收敛为 Controller 可编排的预处理入口。"""
 
-        if not self._relation_preparation_running:
+        if not self._relation_preparation_running and not self._analysis_job_running:
             self.analysis_preparation_requested.emit()
 
     def set_status(self, message: str, timeout_ms: int = 0):
@@ -1487,9 +1953,8 @@ class MainWindow(QMainWindow):
         self.ui.startAnalysisButton.setEnabled(not running)
         self.ui.cancelAnalysisButton.setEnabled(running)
         self.analysis_progress_bar.setVisible(running)
-
-        if not running:
-            self.analysis_progress_bar.setValue(0)
+        # 保留最后一个任务值；总进度的重置由 Controller 统一负责，避免旧
+        # 兼容入口也产生“完成后瞬间跳回 0%”的视觉问题。
 
     def set_analysis_progress(
         self,
@@ -1500,20 +1965,22 @@ class MainWindow(QMainWindow):
 
         self.analysis_progress_bar.setVisible(True)
         self.analysis_progress_bar.setValue(max(0, min(value, 100)))
-        if message:
-            self.set_status(message)
+        # 详细业务阶段只在顶部 Analysis Pipeline 状态展示；底部状态栏保留
+        # Cookie/API/数据库等基础设施状态，避免两处重复展示流程文字。
 
     def set_relation_preparation_running(self, running: bool):
         """锁定预处理期间会改变关联结果上下文的界面交互。"""
 
         self._relation_preparation_running = running
-        self.ui.startAnalysisButton.setEnabled(not running)
-
-        # 当前尚未实现取消业务，继续保持取消按钮的既有禁用状态。
-        self.ui.cancelAnalysisButton.setEnabled(False)
-        self.analysis_progress_bar.setVisible(running)
-        if not running:
-            self.analysis_progress_bar.setValue(0)
+        # “开始分析 / 取消”由完整 Analysis Job 管理；这里仅锁定会改变
+        # 当前 relation 上下文的控件，不能把等待人工审核误当作任务完成。
+        self.ui.startAnalysisButton.setEnabled(
+            not self._analysis_job_running and not running
+        )
+        self.ui.cancelAnalysisButton.setEnabled(self._analysis_job_running)
+        self.analysis_progress_bar.setVisible(
+            self._analysis_job_running or running
+        )
 
         self.ui.asinLineEdit.setEnabled(
             not running and not self._relation_query_running
@@ -1565,9 +2032,26 @@ class MainWindow(QMainWindow):
         self.ui.recordCountLabel.setText(f"{record_count} 条数据")
 
     def set_export_enabled(self, enabled: bool):
-        """仅在 Controller 确认存在可导出结果后开放导出按钮。"""
+        """仅在 Controller 确认本轮 Excel 已成功写出后开放打开按钮。"""
 
         self.ui.exportButton.setEnabled(enabled)
+
+    def set_incomplete_tagging_retry_available(
+        self,
+        count: int,
+        *,
+        enabled: bool = True,
+    ) -> None:
+        """显示当前 generation 可恢复的 AI 失败项，不在 View 判断业务状态。"""
+
+        safe_count = max(0, count) if isinstance(count, int) else 0
+        self.ui.retryIncompleteTaggingButton.setText(
+            f"重试失败项 ({safe_count})"
+        )
+        self.ui.retryIncompleteTaggingButton.setVisible(safe_count > 0)
+        self.ui.retryIncompleteTaggingButton.setEnabled(
+            safe_count > 0 and enabled
+        )
 
     def set_result_model(self, model):
         """接收 Controller 提供的数据模型并交给 QTableView 展示。"""
@@ -1984,9 +2468,13 @@ class MainWindow(QMainWindow):
         for index, (_, _, card) in enumerate(visible_entries):
             row = index // column_count
             column = index % column_count
-            layout.addWidget(card, row, column, top_left)
+            # 对单张卡片设置 AlignLeft 会让 Grid 保留单元格宽度、却按每张
+            # 卡片自身 sizeHint 显示，标题较长时便会出现同排卡片宽度不一致。
+            # 整个 Grid 已统一左上对齐，卡片无需再设置单独的对齐标记。
+            layout.addWidget(card, row, column)
 
         for column in range(4):
+            layout.setColumnMinimumWidth(column, 0)
             layout.setColumnStretch(
                 column,
                 1 if column < column_count else 0,
@@ -2057,6 +2545,19 @@ class MainWindow(QMainWindow):
                 widget.deleteLater()
 
         self._variation_filter_combos.clear()
+
+    def closeEvent(self, event) -> None:
+        """应用退出前确认是否放弃尚未保存的 AI 标签分歧。"""
+
+        if self._tagging_review_pending_count > 0:
+            if not self.confirm_discard_tagging_review(
+                self._tagging_review_pending_count,
+                for_exit=True,
+            ):
+                event.ignore()
+                return
+            self.tagging_review_discard_requested.emit()
+        event.accept()
 
     @staticmethod
     def _month_sort_key(month_value: str) -> tuple[int, int]:

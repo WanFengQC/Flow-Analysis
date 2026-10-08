@@ -1,5 +1,6 @@
 import sys
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from config.database_settings import DATABASE_SETTINGS
@@ -36,6 +37,12 @@ def main() -> int:
         window,
         runtime,
     )
+
+    # 安装包构建验证只检查 Qt、依赖导入和对象初始化，绝不连接 PostgreSQL、
+    # SellerSprite、Cookie 或 AI 服务；正常用户启动不携带此参数。
+    if "--packaging-smoke" in sys.argv:
+        QTimer.singleShot(0, app.quit)
+        return app.exec()
 
     # 先显示主窗口。
     window.show()

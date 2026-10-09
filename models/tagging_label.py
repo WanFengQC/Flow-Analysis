@@ -53,11 +53,32 @@ _CATEGORY_DISPLAY_NAMES = {
     TaggingCategoryKey.STUFFED_ANIMALS: "Stuffed Animals",
 }
 
+_DECISION_SOURCE_DISPLAY_NAMES = {
+    TaggingDecisionSource.AI_CONSENSUS: "AI 共识",
+    TaggingDecisionSource.HUMAN_REVIEW: "人工审核",
+    TaggingDecisionSource.HISTORICAL_IMPORT: "历史导入",
+    TaggingDecisionSource.MANUAL_MANAGEMENT: "人工管理",
+}
+
 
 def category_display_name(category_key: TaggingCategoryKey) -> str:
     """返回固定显示名；UI 文本永远不能反向充当缓存 identity。"""
 
     return _CATEGORY_DISPLAY_NAMES[category_key]
+
+
+def tagging_decision_source_display_name(source: object) -> str:
+    """将稳定的来源枚举转换为中文 UI 文本。
+
+    未知值保持原样展示，避免 UI 错误地将未来新增来源归类为已有来源；
+    数据库存储和 Service 查询仍始终使用英文稳定枚举值。
+    """
+
+    try:
+        normalized_source = TaggingDecisionSource(source)
+    except (TypeError, ValueError):
+        return str(source)
+    return _DECISION_SOURCE_DISPLAY_NAMES[normalized_source]
 
 
 def require_category_key(value: object) -> TaggingCategoryKey:

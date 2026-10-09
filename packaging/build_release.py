@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -17,7 +19,6 @@ if str(PROJECT_ROOT) not in sys.path:
 from config.settings import (
     APP_VERSION,
     PRODUCT_KNOWLEDGE_DOCUMENT_NAMES,
-    UNIAPI_API_KEY,
 )
 
 
@@ -27,6 +28,18 @@ PYINSTALLER_DIST_DIR = DIST_ROOT / "pyinstaller"
 INNO_SCRIPT = PROJECT_ROOT / "packaging" / "FlowAnalysis.iss"
 PRODUCT_KNOWLEDGE_SOURCE_DIR = Path.home() / "Downloads"
 EMBEDDED_RUNTIME_CONFIG_NAME = "embedded_runtime_config.json"
+BUILD_CONFIG_PATH_ENV = "FLOW_ANALYSIS_BUILD_CONFIG_PATH"
+DATABASE_CONFIG_KEYS = (
+    "FLOW_ANALYSIS_DB_HOST",
+    "FLOW_ANALYSIS_DB_PORT",
+    "FLOW_ANALYSIS_DB_NAME",
+    "FLOW_ANALYSIS_DB_USER",
+    "FLOW_ANALYSIS_DB_PASSWORD",
+)
+EMBEDDED_RUNTIME_CONFIG_KEYS = (
+    "UNIAPI_API_KEY",
+    *DATABASE_CONFIG_KEYS,
+)
 
 
 def _find_iscc() -> Path:
@@ -77,20 +90,73 @@ def _product_knowledge_data_arguments() -> list[str]:
     return arguments
 
 
+def _load_build_config_values(path: Path) -> dict[str, str]:
+    """读取构建机受保护配置文件，不把任何值回显到日志。"""
+
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError("无法读取发布构建配置文件") from exc
+
+    values: dict[str, str] = {}
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] in {"'", '"'} and value[-1] == value[0]:
+            value = value[1:-1]
+        if name:
+            values[name] = value
+    return values
+
+
+def _load_build_runtime_config() -> dict[str, str]:
+    """加载正式包必须内嵌的受保护运行配置，缺失时禁止构建。"""
+
+    configured_path = os.getenv(BUILD_CONFIG_PATH_ENV, "").strip()
+    if not configured_path:
+        raise RuntimeError(
+            f"缺少 {BUILD_CONFIG_PATH_ENV}，拒绝构建含数据库配置的正式安装包"
+        )
+
+    values = _load_build_config_values(Path(configured_path))
+    missing = [
+        name
+        for name in EMBEDDED_RUNTIME_CONFIG_KEYS
+        if not values.get(name, "").strip()
+    ]
+    if missing:
+        raise RuntimeError(
+            "发布构建配置缺少必要运行字段：" + ", ".join(missing)
+        )
+
+    try:
+        port = int(values["FLOW_ANALYSIS_DB_PORT"])
+    except ValueError as exc:
+        raise RuntimeError("发布构建配置 FLOW_ANALYSIS_DB_PORT 必须是整数") from exc
+    if not 1 <= port <= 65535:
+        raise RuntimeError("发布构建配置 FLOW_ANALYSIS_DB_PORT 不合法")
+
+    return {
+        name: values[name].strip()
+        for name in EMBEDDED_RUNTIME_CONFIG_KEYS
+    }
+
+
 def _create_embedded_runtime_config() -> Path:
     """在被忽略的构建目录生成仅供 EXE 使用的敏感运行配置。"""
 
-    api_key = UNIAPI_API_KEY.strip()
-    if not api_key:
-        raise RuntimeError(
-            "未配置 UNIAPI_API_KEY，无法构建内置 AI 配置的发布包"
-        )
-
+    payload = _load_build_runtime_config()
     config_path = BUILD_ROOT / EMBEDDED_RUNTIME_CONFIG_NAME
     config_path.write_text(
-        json.dumps({"UNIAPI_API_KEY": api_key}, ensure_ascii=False),
+        json.dumps(payload, ensure_ascii=False),
         encoding="utf-8",
     )
+    # 即使构建失败，构建目录中的明文临时文件也不能遗留。
+    atexit.register(config_path.unlink, missing_ok=True)
     return config_path
 
 

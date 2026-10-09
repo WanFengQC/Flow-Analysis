@@ -22,6 +22,7 @@ from models.tagging_label import (
     TaggingDecisionSource,
     TaggingLabelCacheRecord,
     category_display_name,
+    tagging_decision_source_display_name,
 )
 from ui.ui_tagging_label_management_dialog import Ui_TaggingLabelManagementDialog
 
@@ -29,7 +30,15 @@ from ui.ui_tagging_label_management_dialog import Ui_TaggingLabelManagementDialo
 class TaggingLabelTableModel(QAbstractTableModel):
     """管理页标签表的只读展示模型。"""
 
-    _HEADERS = ("品类", "标准词", "标签", "人工原因", "来源", "版本", "更新时间")
+    _HEADERS = (
+        "品类",
+        "标准词",
+        "标签",
+        "人工原因",
+        "来源",
+        "分类体系版本",
+        "更新时间",
+    )
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -67,7 +76,7 @@ class TaggingLabelTableModel(QAbstractTableModel):
             record.word,
             record.label.value,
             record.reason or "—",
-            record.decision_source.value,
+            tagging_decision_source_display_name(record.decision_source),
             str(record.taxonomy_version),
             self._datetime_text(record.updated_at or record.created_at),
         )
@@ -199,7 +208,9 @@ class TaggingLabelManagementDialog(QDialog):
         text = QPlainTextEdit(dialog)
         text.setReadOnly(True)
         lines = [
-            f"{entry.get('createdAt') or '—'}  {entry.get('eventType')} / {entry.get('action')}\n{entry.get('snapshot')}"
+            f"{entry.get('createdAt') or '—'}  {entry.get('eventType')} / "
+            f"{self._history_action_display(entry.get('action'))}\n"
+            f"{self._history_snapshot_display(entry.get('snapshot'))}"
             for entry in entries
         ]
         text.setPlainText("\n\n".join(lines) or "暂无历史")
@@ -215,7 +226,39 @@ class TaggingLabelManagementDialog(QDialog):
             self.ui.labelComboBox.addItem(label.value, label.value)
         self.ui.sourceComboBox.addItem("全部来源", None)
         for source in TaggingDecisionSource:
-            self.ui.sourceComboBox.addItem(source.value, source.value)
+            self.ui.sourceComboBox.addItem(
+                tagging_decision_source_display_name(source),
+                source.value,
+            )
+
+    @staticmethod
+    def _history_action_display(value: object) -> str:
+        """仅转换历史中实际的来源枚举，不改变 CREATE 等管理动作。"""
+
+        try:
+            TaggingDecisionSource(value)
+        except (TypeError, ValueError):
+            return str(value)
+        return tagging_decision_source_display_name(value)
+
+    @classmethod
+    def _history_snapshot_display(cls, value: object) -> object:
+        """递归转换审计快照内的来源字段，审计原始值保持在数据库中。"""
+
+        if isinstance(value, Mapping):
+            return {
+                key: (
+                    tagging_decision_source_display_name(item)
+                    if key == "decisionSource"
+                    else cls._history_snapshot_display(item)
+                )
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [cls._history_snapshot_display(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(cls._history_snapshot_display(item) for item in value)
+        return value
 
     def _refresh_first_page(self) -> None:
         self._page = 0

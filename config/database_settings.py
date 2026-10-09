@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 
 # 导入 settings 的唯一目的，是复用其已完成的 .env 加载顺序：进程环境变量
@@ -15,6 +16,7 @@ from config import settings as application_settings
 
 
 _ENV_PREFIX = "FLOW_ANALYSIS_DB_"
+_EXTERNAL_OVERRIDE_ENV = "FLOW_ANALYSIS_ENABLE_EXTERNAL_DB_OVERRIDE"
 
 
 def _environment_text(name: str, default: str = "") -> str:
@@ -35,6 +37,21 @@ def _environment_integer(name: str, default: int) -> int:
         raise ValueError(
             f"环境变量 {_ENV_PREFIX}{name} 必须是整数"
         ) from exc
+
+
+def _config_integer(
+    value: str,
+    variable_name: str,
+    default: int,
+) -> int:
+    """解析内嵌配置中的整数，报错时不回显实际配置值。"""
+
+    if not value:
+        return default
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ValueError(f"内嵌配置 {variable_name} 必须是整数") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,13 +83,31 @@ class DatabaseSettings:
 
     @classmethod
     def from_runtime_environment(cls) -> "DatabaseSettings":
-        """从外部运行环境构造应用专用数据库配置。
+        """按运行形态构造应用数据库配置。
 
-        不读取 settings 的 packaged runtime config，因此即使构建流程未来新增
-        其它内置变量，也无法意外将数据库密码带入 EXE。
+        源码开发始终支持环境变量与 .env。冻结正式包默认只读取构建时内嵌
+        的五项数据库字段；只有显式设置测试/开发覆盖开关时才接受外部替换。
         """
 
-        # 显式引用可防止代码清理时误删上方导入，破坏 .env 加载顺序。
+        frozen_runtime = bool(getattr(sys, "frozen", False))
+        external_override_enabled = (
+            os.getenv(_EXTERNAL_OVERRIDE_ENV, "").strip() == "1"
+        )
+        if frozen_runtime and not external_override_enabled:
+            packaged = application_settings.packaged_database_runtime_config()
+            return cls(
+                host=packaged["FLOW_ANALYSIS_DB_HOST"],
+                port=_config_integer(
+                    packaged["FLOW_ANALYSIS_DB_PORT"],
+                    "FLOW_ANALYSIS_DB_PORT",
+                    5432,
+                ),
+                database=packaged["FLOW_ANALYSIS_DB_NAME"],
+                user=packaged["FLOW_ANALYSIS_DB_USER"],
+                password=packaged["FLOW_ANALYSIS_DB_PASSWORD"],
+            )
+
+        # 显式引用可防止代码清理时误删上方导入，破坏开发期 .env 加载顺序。
         _ = application_settings.APP_CONFIG_DIR
         return cls(
             host=_environment_text("HOST"),

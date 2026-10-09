@@ -13,11 +13,12 @@ from unittest.mock import patch
 from pathlib import Path
 
 from config.database_settings import DatabaseSettings
+from config import settings as application_settings
 from controllers.main_controller import MainController
 
 
 class DatabaseSettingsSecurityTest(unittest.TestCase):
-    """验证桌面客户端只能从外部运行时配置读取数据库连接信息。"""
+    """验证源码与冻结正式包使用各自受控的数据库配置来源。"""
 
     def test_runtime_environment_has_no_source_credential_fallback(self) -> None:
         with patch.dict(
@@ -51,6 +52,84 @@ class DatabaseSettingsSecurityTest(unittest.TestCase):
         self.assertEqual("flow_analysis_test", settings.database)
         self.assertEqual("flow_analysis_app", settings.user)
         self.assertEqual("test-only-secret", settings.password)
+
+    def test_frozen_release_uses_embedded_database_config_by_default(self) -> None:
+        embedded = {
+            "FLOW_ANALYSIS_DB_HOST": "embedded-db",
+            "FLOW_ANALYSIS_DB_PORT": "5433",
+            "FLOW_ANALYSIS_DB_NAME": "embedded-name",
+            "FLOW_ANALYSIS_DB_USER": "embedded-user",
+            "FLOW_ANALYSIS_DB_PASSWORD": "embedded-test-secret",
+        }
+        external = {
+            "FLOW_ANALYSIS_DB_HOST": "external-db",
+            "FLOW_ANALYSIS_DB_PORT": "5434",
+            "FLOW_ANALYSIS_DB_NAME": "external-name",
+            "FLOW_ANALYSIS_DB_USER": "external-user",
+            "FLOW_ANALYSIS_DB_PASSWORD": "external-test-secret",
+        }
+        with (
+            patch.dict(os.environ, external, clear=True),
+            patch.object(sys, "frozen", True, create=True),
+            patch.object(application_settings, "_PACKAGED_RUNTIME_CONFIG", embedded),
+        ):
+            settings = DatabaseSettings.from_runtime_environment()
+
+        self.assertEqual("embedded-db", settings.host)
+        self.assertEqual(5433, settings.port)
+        self.assertEqual("embedded-name", settings.database)
+        self.assertEqual("embedded-user", settings.user)
+        self.assertEqual("embedded-test-secret", settings.password)
+
+    def test_frozen_release_allows_external_database_override_only_explicitly(self) -> None:
+        embedded = {
+            "FLOW_ANALYSIS_DB_HOST": "embedded-db",
+            "FLOW_ANALYSIS_DB_PORT": "5433",
+            "FLOW_ANALYSIS_DB_NAME": "embedded-name",
+            "FLOW_ANALYSIS_DB_USER": "embedded-user",
+            "FLOW_ANALYSIS_DB_PASSWORD": "embedded-test-secret",
+        }
+        external = {
+            "FLOW_ANALYSIS_ENABLE_EXTERNAL_DB_OVERRIDE": "1",
+            "FLOW_ANALYSIS_DB_HOST": "external-db",
+            "FLOW_ANALYSIS_DB_PORT": "5434",
+            "FLOW_ANALYSIS_DB_NAME": "external-name",
+            "FLOW_ANALYSIS_DB_USER": "external-user",
+            "FLOW_ANALYSIS_DB_PASSWORD": "external-test-secret",
+        }
+        with (
+            patch.dict(os.environ, external, clear=True),
+            patch.object(sys, "frozen", True, create=True),
+            patch.object(application_settings, "_PACKAGED_RUNTIME_CONFIG", embedded),
+        ):
+            settings = DatabaseSettings.from_runtime_environment()
+
+        self.assertEqual("external-db", settings.host)
+        self.assertEqual(5434, settings.port)
+        self.assertEqual("external-name", settings.database)
+
+    def test_frozen_release_missing_embedded_password_does_not_fallback_to_external(self) -> None:
+        embedded = {
+            "FLOW_ANALYSIS_DB_HOST": "embedded-db",
+            "FLOW_ANALYSIS_DB_PORT": "5432",
+            "FLOW_ANALYSIS_DB_NAME": "embedded-name",
+            "FLOW_ANALYSIS_DB_USER": "embedded-user",
+            "FLOW_ANALYSIS_DB_PASSWORD": "",
+        }
+        external = {
+            "FLOW_ANALYSIS_DB_PASSWORD": "external-test-secret",
+        }
+        with (
+            patch.dict(os.environ, external, clear=True),
+            patch.object(sys, "frozen", True, create=True),
+            patch.object(application_settings, "_PACKAGED_RUNTIME_CONFIG", embedded),
+        ):
+            settings = DatabaseSettings.from_runtime_environment()
+
+        with self.assertRaises(ValueError) as context:
+            settings.validate()
+        self.assertIn("FLOW_ANALYSIS_DB_PASSWORD", str(context.exception))
+        self.assertNotIn("external-test-secret", str(context.exception))
 
     def test_validation_does_not_echo_password(self) -> None:
         password = "test-only-secret"

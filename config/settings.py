@@ -108,6 +108,16 @@ def _load_packaged_runtime_config() -> dict[str, str]:
 
 _PACKAGED_RUNTIME_CONFIG = _load_packaged_runtime_config()
 
+# 正式冻结包的数据库连接信息由构建阶段生成并写入 embedded_runtime_config。
+# 这里仅定义字段白名单；源码开发模式不会使用该配置作为数据库回退。
+PACKAGED_DATABASE_CONFIG_KEYS = (
+    "FLOW_ANALYSIS_DB_HOST",
+    "FLOW_ANALYSIS_DB_PORT",
+    "FLOW_ANALYSIS_DB_NAME",
+    "FLOW_ANALYSIS_DB_USER",
+    "FLOW_ANALYSIS_DB_PASSWORD",
+)
+
 
 def _runtime_setting(name: str, default: str = "") -> str:
     """环境变量优先，其次读取 EXE 内置配置，最后使用非敏感默认值。"""
@@ -117,6 +127,15 @@ def _runtime_setting(name: str, default: str = "") -> str:
         or _PACKAGED_RUNTIME_CONFIG.get(name, "").strip()
         or default
     )
+
+
+def packaged_database_runtime_config() -> dict[str, str]:
+    """返回冻结包内嵌的数据库配置白名单，不读取外部环境变量。"""
+
+    return {
+        name: _PACKAGED_RUNTIME_CONFIG.get(name, "").strip()
+        for name in PACKAGED_DATABASE_CONFIG_KEYS
+    }
 
 
 # 发布版本只由源码维护；更新清单只能提供更高的正式语义化版本。

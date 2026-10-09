@@ -120,7 +120,7 @@ def _runtime_setting(name: str, default: str = "") -> str:
 
 
 # 发布版本只由源码维护；更新清单只能提供更高的正式语义化版本。
-APP_VERSION = "3.0.8"
+APP_VERSION = "3.0.9"
 
 # Cookie 获取接口
 COOKIE_API_URL = "http://192.168.110.107:18765/api/cookie"
@@ -201,7 +201,7 @@ TAGGING_GEMINI_REQUEST_OPTIONS = _load_request_options(
     "TAGGING_GEMINI_REQUEST_OPTIONS_JSON"
 )
 
-# 打标调用的批量与限流约束。真实 B0DSHYXD4G / 202608 逐家串行验证中，20 条
+# 打标调用的批量与限流约束。历史隔离串行验证中，20 条
 # 输入可让 Claude 与 Gemini 以完整 JSON 通过严格校验；25 条的 Gemini 输出已
 # 出现非法 JSON。因此以 20 作为当前目标批大小，发送前仍按实际 Prompt 大小
 # 与输出容量自动拆分。GPT 因上游余额不足未能完成同批验证，额度恢复后应先进行

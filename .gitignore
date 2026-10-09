@@ -1,5 +1,4 @@
 runtime/
-tests/
 .env
 build/
 dist/
@@ -13,3 +12,30 @@ resources/embedded_runtime_config.json
 *.key
 *.p12
 *.pfx
+
+# 常规自动化测试源码需要纳入版本管理；仅排除测试生成物与敏感样本。
+tests/__pycache__/
+tests/.pytest_cache/
+tests/.mypy_cache/
+tests/.coverage
+tests/coverage.xml
+tests/htmlcov/
+tests/output/
+tests/outputs/
+tests/tmp/
+tests/tmp*/
+tests/**/*.xlsx
+tests/**/*.xls
+tests/**/*.csv
+tests/**/*.sqlite
+tests/**/*.sqlite3
+tests/**/*.db
+tests/**/cookie*.json
+tests/**/cookie*.txt
+tests/**/api_response*.json
+tests/**/responses/
+
+# 仅供本机诊断或会创建隔离 PostgreSQL 数据库的脚本，不随常规测试源码提交。
+tests/benchmark_excel_export.py
+tests/postgres_management_integration.py
+tests/postgres_rc_security_integration.py

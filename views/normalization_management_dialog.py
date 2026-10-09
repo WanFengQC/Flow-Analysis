@@ -32,7 +32,7 @@ from ui.ui_normalization_management_dialog import Ui_NormalizationManagementDial
 class NormalizationActiveRuleTableModel(QAbstractTableModel):
     """当前有效规则的纯展示模型，不承担搜索、排序或数据库访问。"""
 
-    _HEADERS = ("品类", "类型", "变体词", "标准词", "来源", "更新时间")
+    _HEADERS = ("品类", "类型", "原词", "标准词", "来源", "更新时间")
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)

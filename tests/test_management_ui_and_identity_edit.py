@@ -213,7 +213,7 @@ class ManagementDisplayTest(TestCase):
         model = NormalizationActiveRuleTableModel()
         model.set_records([record])
         headers = [model.headerData(i, Qt.Orientation.Horizontal) for i in range(model.columnCount())]
-        self.assertEqual(headers, ["品类", "类型", "变体词", "标准词", "来源", "更新时间"])
+        self.assertEqual(headers, ["品类", "类型", "原词", "标准词", "来源", "更新时间"])
         self.assertEqual(model.data(model.index(0, 1)), "短语")
         self.assertEqual(model.data(model.index(0, 4)), "B0ABCDEF12（+1）")
         self.assertEqual(model.data(model.index(0, 4), Qt.ItemDataRole.ToolTipRole), "B0ABCDEF12\nB0ABCDEF34")

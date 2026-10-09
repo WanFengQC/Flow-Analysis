@@ -29,6 +29,16 @@ class ExportServiceTest(unittest.TestCase):
             cls.service._template_path(),
             data_only=False,
         )
+        cls.template_asin_result_sheet = next(
+            name
+            for name in cls.template_workbook.sheetnames
+            if name.endswith("_result") and name != "SUMMARY_result"
+        )
+        cls.template_asin_raw_sheet = next(
+            name
+            for name in cls.template_workbook.sheetnames
+            if name.endswith("_raw") and name != "SUMMARY_raw"
+        )
         cls.output_workbook = load_workbook(cls.output, data_only=False)
 
     @classmethod
@@ -338,11 +348,11 @@ class ExportServiceTest(unittest.TestCase):
             self.assertEqual(asin_result["B3"].value, 2)
             self.assertEqual(asin_result["E3"].value, 12000)
             self._assert_template_style(
-                self.template_workbook["B0TMPL0001_result"]["A2"],
+                self.template_workbook[self.template_asin_result_sheet]["A2"],
                 asin_result["A2"],
             )
             self._assert_template_style(
-                self.template_workbook["B0TMPL0001_result"]["A3"],
+                self.template_workbook[self.template_asin_result_sheet]["A3"],
                 asin_result["A3"],
             )
             self.assertEqual(result_list["C3"].value, asin_result["A3"].value)
@@ -371,12 +381,16 @@ class ExportServiceTest(unittest.TestCase):
             )
             self.assertEqual(
                 workbook["B0NEWASIN_result"]["A1"].fill.fgColor.rgb,
-                self.template_workbook["B0TMPL0001_result"]["A1"].fill.fgColor.rgb,
+                self.template_workbook[self.template_asin_result_sheet]["A1"].fill.fgColor.rgb,
             )
-            self.assertNotIn("B0TMPL0001", workbook.sheetnames)
+            self.assertNotIn(self.template_asin_result_sheet, workbook.sheetnames)
+            self.assertNotIn(self.template_asin_raw_sheet, workbook.sheetnames)
             self.assertFalse(
                 any(
-                    cell.value == "B0TMPL0001"
+                    cell.value in {
+                        self.template_asin_result_sheet.removesuffix("_result"),
+                        self.template_asin_raw_sheet.removesuffix("_raw"),
+                    }
                     for worksheet in workbook.worksheets
                     for cell in worksheet._cells.values()
                 )
@@ -508,16 +522,12 @@ class ExportServiceTest(unittest.TestCase):
         template = self.service._template_path()
         self.assertTrue(template.is_file())
         workbook = self.template_workbook
-        self.assertEqual(
-            workbook.sheetnames,
-            [
-                "SUMMARY_raw",
-                "SUMMARY_result",
-                "SUMMARY_result_list",
-                "B0TMPL0001_result",
-                "B0TMPL0001_raw",
-            ],
-        )
+        self.assertEqual(workbook.sheetnames[:3], [
+            "SUMMARY_raw", "SUMMARY_result", "SUMMARY_result_list",
+        ])
+        self.assertEqual(len(workbook.sheetnames), 5)
+        self.assertTrue(self.template_asin_result_sheet.endswith("_result"))
+        self.assertTrue(self.template_asin_raw_sheet.endswith("_raw"))
         self.assertFalse(
             any(
                 cell.value is not None

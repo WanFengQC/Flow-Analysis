@@ -64,7 +64,7 @@ class ProductKnowledgeServiceTest(unittest.TestCase):
     def test_child_asin_context_comes_from_matching_product_document(self):
         """B0TEST0001 必须命中 M，而不是进入 Amazon fallback。"""
 
-        context = self.service.get_context_for_asin(" b0dshyxd4g ")
+        context = self.service.get_context_for_asin(" b0test0001 ")
 
         self.assertIsNotNone(context)
         assert context is not None

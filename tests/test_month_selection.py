@@ -9,7 +9,7 @@ from unittest.mock import patch
 # 测试环境不依赖真实桌面显示服务，必须在导入 Qt 前固定离屏平台。
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QModelIndex
+from PySide6.QtCore import QCoreApplication, QEvent, QModelIndex
 from PySide6.QtWidgets import QApplication
 
 from controllers.main_controller import MainController
@@ -123,6 +123,9 @@ class MonthSelectionTest(unittest.TestCase):
 
         self.window.close()
         self.window.deleteLater()
+        self.window = None
+        # 明确处理 DeferredDelete，避免测试模块连续创建窗口时遗留 C++ 控件。
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         self._application.processEvents()
 
     def test_only_recent_30_days_uses_relative_analysis_month(self):
@@ -296,6 +299,9 @@ class MonthSelectionTest(unittest.TestCase):
         self.assertEqual(analysis_service.result_keys, selected_analysis_months)
 
         controller._analysis_processing_active = True
+        # 本用例只验证月份快照到 Word Analysis 的传递；阻止后续真实
+        # QThread 归一任务在窗口销毁后回调，避免把线程生命周期混入快照断言。
+        controller._apply_normalization_rules = lambda _candidates: None
         controller._on_reversing_result_analysis_succeeded(
             processed_payloads[0]
         )

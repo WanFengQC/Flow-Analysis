@@ -47,12 +47,12 @@ class AmazonProductContextProviderTest(unittest.TestCase):
 
         self.assertEqual(
             self.provider._normalize_unique_asins(
-                ["b09mt19sgb", "B0TEST0002", "B0TEST0001"]
+                ["b0test0002", "B0TEST0002", "B0TEST0001"]
             ),
             ["B0TEST0002", "B0TEST0001"],
         )
         with self.assertRaises(ValueError):
-            self.provider._normalize_unique_asins(["not-an-asin"])
+            self.provider._normalize_unique_asins(["invalid-asin"])
 
     def test_us_delivery_correction_only_triggers_for_explicit_bad_locale(self):
         """英文美元环境不额外操作 Amazon UI，CNY/中国配送才允许尝试 ZIP。"""

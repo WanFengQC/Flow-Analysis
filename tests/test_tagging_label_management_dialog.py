@@ -112,21 +112,31 @@ class TaggingDecisionSourceDisplayTest(unittest.TestCase):
         self.assertIn("decision_source = %(decision_source)s", where)
         self.assertEqual(parameters["decision_source"], "HISTORICAL_IMPORT")
 
-    def test_table_uses_source_display_name_and_taxonomy_version(self):
+    def test_table_uses_source_display_name_without_internal_versions(self):
         model = TaggingLabelTableModel()
         model.set_records([_record(TaggingDecisionSource.HUMAN_REVIEW)])
 
         source_index = model.index(0, 4)
-        version_index = model.index(0, 5)
+        updated_at_index = model.index(0, 5)
+        self.assertEqual(model.columnCount(), 6)
         self.assertEqual(
             model.data(source_index, Qt.ItemDataRole.DisplayRole),
             "人工审核",
         )
-        self.assertEqual(model.data(version_index, Qt.ItemDataRole.DisplayRole), "7")
         self.assertEqual(
             model.headerData(5, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole),
-            "分类体系版本",
+            "更新时间",
         )
+        self.assertEqual(
+            model.data(updated_at_index, Qt.ItemDataRole.DisplayRole),
+            "2026-10-09 12:00",
+        )
+        headers = [
+            model.headerData(index, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole)
+            for index in range(model.columnCount())
+        ]
+        self.assertNotIn("分类体系版本", headers)
+        self.assertNotIn("版本", headers)
 
     def test_unknown_source_is_not_mapped_to_a_known_source(self):
         self.assertEqual(

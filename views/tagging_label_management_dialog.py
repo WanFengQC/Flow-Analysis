@@ -36,7 +36,6 @@ class TaggingLabelTableModel(QAbstractTableModel):
         "标签",
         "人工原因",
         "来源",
-        "分类体系版本",
         "更新时间",
     )
 
@@ -77,7 +76,6 @@ class TaggingLabelTableModel(QAbstractTableModel):
             record.label.value,
             record.reason or "—",
             tagging_decision_source_display_name(record.decision_source),
-            str(record.taxonomy_version),
             self._datetime_text(record.updated_at or record.created_at),
         )
         return values[index.column()] if index.column() < len(values) else None

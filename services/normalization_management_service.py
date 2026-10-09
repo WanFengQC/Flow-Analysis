@@ -18,6 +18,7 @@ from models.normalization_rule import (
     NormalizationRule,
     NormalizationRuleType,
 )
+from models.tagging_label import TaggingCategoryKey, require_category_key
 from repositories.database import DatabaseManager
 from repositories.normalization_active_rule_repository import (
     NormalizationActiveRuleRepository,
@@ -62,6 +63,7 @@ class NormalizationManagementService:
         *,
         search: str | None = None,
         rule_type: NormalizationRuleType | None = None,
+        category_key: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[list[NormalizationActiveRuleRecord], int]:
@@ -72,6 +74,7 @@ class NormalizationManagementService:
         ).list_active_rules(
             search=search,
             rule_type=rule_type,
+            category_key=(require_category_key(category_key) if category_key else None),
             limit=limit,
             offset=offset,
         )
@@ -86,7 +89,9 @@ class NormalizationManagementService:
             self._database
         ).list_history(rule_id)
 
-    async def load_effective_rules(self) -> ApprovedNormalizationRules:
+    async def load_effective_rules(
+        self, category_key: str | None = None
+    ) -> ApprovedNormalizationRules:
         """构建新分析可冻结的数据库当前规则快照。"""
 
         async with self._database.transaction() as connection:
@@ -94,7 +99,11 @@ class NormalizationManagementService:
                 self._database,
                 connection,
             )
-            active_records = await repository.list_all_active_for_validation()
+            active_records = (
+                await repository.list_effective_active_rules(require_category_key(category_key))
+                if category_key
+                else await repository.list_all_active_for_validation()
+            )
             result = self._build_rules_from_records(active_records)
             self._require_valid(result)
             assert result.approved_rules is not None
@@ -103,6 +112,7 @@ class NormalizationManagementService:
     async def build_effective_rules_with_candidates(
         self,
         candidates: Sequence[Mapping[str, Any]],
+        category_key: str | None = None,
     ) -> ApprovedNormalizationRules:
         """将当前任务已批准候选与数据库有效规则一起做完整校验。
 
@@ -114,7 +124,11 @@ class NormalizationManagementService:
                 self._database,
                 connection,
             )
-            active_records = await repository.list_all_active_for_validation()
+            active_records = (
+                await repository.list_effective_active_rules(require_category_key(category_key))
+                if category_key
+                else await repository.list_all_active_for_validation()
+            )
             result = self._build_rules(
                 [
                     *self._candidates_from_records(active_records),
@@ -131,12 +145,14 @@ class NormalizationManagementService:
         rule_type: NormalizationRuleType,
         variants: Sequence[str],
         canonical: str,
+        category_key: str | None = None,
     ) -> NormalizationActiveRuleRecord:
         """创建一条用户明确确认的当前有效规则，并校验完整现有集合。"""
 
         clean_variants = self._normalize_variants(variants)
         clean_canonical = self._normalize_text(canonical, "canonical")
         self._require_declared_type(rule_type, clean_variants)
+        scoped_category = require_category_key(category_key) if category_key else None
         new_candidate = self._rule_candidate(
             candidate_id="manual:new",
             variants=clean_variants,
@@ -150,20 +166,14 @@ class NormalizationManagementService:
             )
             await repository.acquire_management_lock()
             active_records = await repository.list_all_active_for_validation()
-            self._require_valid(
-                self._build_rules(
-                    [
-                        *self._candidates_from_records(active_records),
-                        new_candidate,
-                    ]
-                )
-            )
+            self._require_valid_for_scope(active_records, new_candidate, scoped_category)
             inserted = await repository.insert_rule(
                 NormalizationActiveRuleRecord(
                     id=uuid4(),
                     rule_type=rule_type,
                     variants=clean_variants,
                     canonical=clean_canonical,
+                    category_key=scoped_category,
                     source_candidate_id=None,
                     source_reason_types=(self._MANUAL_REASON_TYPE,),
                     supersedes_rule_id=None,
@@ -186,12 +196,14 @@ class NormalizationManagementService:
         rule_type: NormalizationRuleType,
         variants: Sequence[str],
         canonical: str,
+        category_key: str | None = None,
     ) -> NormalizationActiveRuleRecord:
         """版本化替换规则，旧版本逻辑撤销且审计完整保留。"""
 
         clean_variants = self._normalize_variants(variants)
         clean_canonical = self._normalize_text(canonical, "canonical")
         self._require_declared_type(rule_type, clean_variants)
+        scoped_category = require_category_key(category_key) if category_key else None
         async with self._database.transaction() as connection:
             repository = NormalizationActiveRuleRepository(
                 self._database,
@@ -205,18 +217,15 @@ class NormalizationManagementService:
             remaining_records = [
                 record for record in active_records if record.id != rule_id
             ]
-            self._require_valid(
-                self._build_rules(
-                    [
-                        *self._candidates_from_records(remaining_records),
-                        self._rule_candidate(
-                            candidate_id=f"manual:update:{rule_id}",
-                            variants=clean_variants,
-                            canonical=clean_canonical,
-                            reason_types=(self._MANUAL_REASON_TYPE,),
-                        ),
-                    ]
-                )
+            self._require_valid_for_scope(
+                remaining_records,
+                self._rule_candidate(
+                    candidate_id=f"manual:update:{rule_id}",
+                    variants=clean_variants,
+                    canonical=clean_canonical,
+                    reason_types=(self._MANUAL_REASON_TYPE,),
+                ),
+                scoped_category,
             )
             revoked = await repository.revoke_rule(rule_id, expected_revision)
             if revoked is None:
@@ -232,6 +241,7 @@ class NormalizationManagementService:
                     rule_type=rule_type,
                     variants=clean_variants,
                     canonical=clean_canonical,
+                    category_key=scoped_category,
                     source_candidate_id=previous.source_candidate_id,
                     source_reason_types=(self._MANUAL_REASON_TYPE,),
                     supersedes_rule_id=previous.id,
@@ -273,6 +283,7 @@ class NormalizationManagementService:
     async def activate_applied_candidates(
         self,
         candidates: Sequence[Mapping[str, Any]],
+        category_key: str | None = None,
     ) -> tuple[NormalizationActiveRuleRecord, ...]:
         """仅在用户完成审核并成功应用后发布当前已批准候选。
 
@@ -283,6 +294,7 @@ class NormalizationManagementService:
         approved_candidates = self._approved_candidates(candidates)
         if not approved_candidates:
             return ()
+        scoped_category = require_category_key(category_key) if category_key else None
         async with self._database.transaction() as connection:
             repository = NormalizationActiveRuleRepository(
                 self._database,
@@ -290,13 +302,13 @@ class NormalizationManagementService:
             )
             await repository.acquire_management_lock()
             active_records = await repository.list_all_active_for_validation()
-            result = self._build_rules(
-                [
-                    *self._candidates_from_records(active_records),
-                    *approved_candidates,
-                ]
+            self._require_valid_for_scope_records(
+                active_records, approved_candidates, scoped_category
             )
-            self._require_valid(result)
+            result = self._build_rules([
+                *self._candidates_from_scope(active_records, scoped_category),
+                *approved_candidates,
+            ])
             active_signatures = {
                 self._rule_signature(record.to_normalization_rule())
                 for record in active_records
@@ -313,6 +325,7 @@ class NormalizationManagementService:
                         rule_type=rule.rule_type,
                         variants=rule.variants,
                         canonical=rule.canonical,
+                        category_key=scoped_category,
                         source_candidate_id=rule.source_candidate_id.removeprefix("candidate:"),
                         source_reason_types=rule.source_reason_types,
                         supersedes_rule_id=None,
@@ -356,6 +369,47 @@ class NormalizationManagementService:
         records: Sequence[NormalizationActiveRuleRecord],
     ) -> ApprovedRulesBuildResult:
         return self._build_rules(self._candidates_from_records(records))
+
+    def _require_valid_for_scope(
+        self,
+        active_records: Sequence[NormalizationActiveRuleRecord],
+        candidate: Mapping[str, Any],
+        category_key: TaggingCategoryKey | None,
+    ) -> None:
+        self._require_valid_for_scope_records(active_records, [candidate], category_key)
+
+    def _require_valid_for_scope_records(
+        self,
+        active_records: Sequence[NormalizationActiveRuleRecord],
+        candidates: Sequence[Mapping[str, Any]],
+        category_key: TaggingCategoryKey | None,
+    ) -> None:
+        """品类规则只与同品类及全局规则校验；全局规则逐品类校验。"""
+
+        scopes = {record.category_key for record in active_records if record.category_key}
+        if category_key is not None:
+            scopes = {category_key}
+        if not scopes:
+            self._require_valid(self._build_rules([
+                *self._candidates_from_scope(active_records, None), *candidates
+            ]))
+            return
+        for scope in scopes:
+            scoped_candidates = list(candidates) if category_key in (None, scope) else []
+            self._require_valid(self._build_rules([
+                *self._candidates_from_scope(active_records, scope), *scoped_candidates
+            ]))
+
+    @classmethod
+    def _candidates_from_scope(
+        cls,
+        records: Sequence[NormalizationActiveRuleRecord],
+        category_key: TaggingCategoryKey | None,
+    ) -> list[dict[str, Any]]:
+        return cls._candidates_from_records([
+            record for record in records
+            if record.category_key is None or record.category_key == category_key
+        ])
 
     def _build_rules(
         self,
@@ -470,6 +524,7 @@ class NormalizationManagementService:
             "ruleType": record.rule_type.value,
             "variants": list(record.variants),
             "canonical": record.canonical,
+            "categoryKey": record.category_key.value if record.category_key else None,
             "sourceCandidateId": record.source_candidate_id,
             "sourceReasonTypes": list(record.source_reason_types),
             "supersedesRuleId": (

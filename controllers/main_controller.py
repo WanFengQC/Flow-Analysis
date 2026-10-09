@@ -330,6 +330,7 @@ class MainController(QObject):
         # 已经开始的分析 generation。
         self._pending_normalization_apply_snapshot: list[dict[str, Any]] | None = None
         self._pending_normalization_effective_rules: ApprovedNormalizationRules | None = None
+        self._pending_normalization_category_key: str | None = None
         self._pending_normalization_apply_generation: int | None = None
         self._normalization_effective_rules_future: Future | None = None
         self._normalization_publish_future: Future | None = None
@@ -571,11 +572,12 @@ class MainController(QObject):
         future.add_done_callback(complete)
         return future
 
-    @Slot(str, object, int)
+    @Slot(str, object, object, int)
     def _load_normalization_management_rules(
         self,
         search: str,
         rule_type_value: object,
+        category_key: object,
         page: int,
     ) -> None:
         """后台查询当前有效归一规则；审核历史表不参与此列表。"""
@@ -597,6 +599,7 @@ class MainController(QObject):
             service.list_current_rules(
                 search=search,
                 rule_type=rule_type,
+                category_key=str(category_key) if category_key else None,
                 limit=100,
                 offset=max(0, page) * 100,
             ),
@@ -604,12 +607,13 @@ class MainController(QObject):
             failed=self.normalization_management_failed,
         )
 
-    @Slot(str, object, str)
+    @Slot(str, object, str, object)
     def _create_normalization_management_rule(
         self,
         rule_type_value: str,
         variants: object,
         canonical: str,
+        category_key: object,
     ) -> None:
         service = self.normalization_management_service
         if service is None:
@@ -626,12 +630,13 @@ class MainController(QObject):
                 rule_type=rule_type,
                 variants=variant_values,
                 canonical=canonical,
+                category_key=str(category_key) if category_key else None,
             ),
             succeeded=self.normalization_management_changed,
             failed=self.normalization_management_failed,
         )
 
-    @Slot(object, int, str, object, str)
+    @Slot(object, int, str, object, str, object)
     def _update_normalization_management_rule(
         self,
         rule_id: object,
@@ -639,6 +644,7 @@ class MainController(QObject):
         rule_type_value: str,
         variants: object,
         canonical: str,
+        category_key: object,
     ) -> None:
         service = self.normalization_management_service
         if service is None:
@@ -658,6 +664,7 @@ class MainController(QObject):
                 rule_type=rule_type,
                 variants=variant_values,
                 canonical=canonical,
+                category_key=str(category_key) if category_key else None,
             ),
             succeeded=self.normalization_management_changed,
             failed=self.normalization_management_failed,
@@ -3438,13 +3445,19 @@ class MainController(QObject):
             self._pending_normalization_apply_snapshot = None
             self._pending_normalization_apply_generation = None
         elif self.normalization_management_service is not None:
+            try:
+                category_key = self.window.tagging_category_key()
+            except (AttributeError, ValueError):
+                self.normalization_effective_rules_failed.emit("当前分析品类无效")
+                return
             self._pending_normalization_apply_snapshot = candidate_snapshot
             self._pending_normalization_apply_generation = self._analysis_generation
+            self._pending_normalization_category_key = category_key
             self.window.set_status("正在加载当前有效归一规则...")
             try:
                 future = self.runtime.async_runtime.submit(
                     self.normalization_management_service.build_effective_rules_with_candidates(
-                        candidate_snapshot
+                        candidate_snapshot, category_key
                     )
                 )
             except Exception as error:
@@ -3681,7 +3694,9 @@ class MainController(QObject):
             try:
                 future = self.runtime.async_runtime.submit(
                     self.normalization_management_service.activate_applied_candidates(
-                        approved_candidates
+                        approved_candidates,
+                        self._pending_normalization_category_key
+                        or self.window.tagging_category_key(),
                     )
                 )
             except Exception as error:

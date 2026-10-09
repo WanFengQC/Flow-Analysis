@@ -7,6 +7,9 @@ from models.tagging_label import (
     TaggingCategoryKey,
     TaggingDecisionSource,
 )
+from models.normalization_active_rule import NormalizationActiveRuleRecord
+from models.normalization_rule import NormalizationRuleType
+from uuid import uuid4
 from services.normalization_management_service import (
     NormalizationManagementService,
     NormalizationRuleValidationError,
@@ -82,3 +85,26 @@ class NormalizationManagementGuardTest(TestCase):
 
         with self.assertRaises(NormalizationRuleValidationError):
             service._require_valid(result)
+
+    def test_category_rule_does_not_conflict_with_another_category(self):
+        service = NormalizationManagementService(database=None)  # type: ignore[arg-type]
+        records = [
+            NormalizationActiveRuleRecord(
+                id=uuid4(), rule_type=NormalizationRuleType.WORD,
+                variants=("adult",), canonical="adults", source_candidate_id=None,
+                source_reason_types=("MANUAL_MANAGEMENT",), supersedes_rule_id=None,
+                revision=1, is_active=True, category_key=TaggingCategoryKey.PILLOW,
+            ),
+        ]
+        candidate = service._rule_candidate(
+            candidate_id="manual:new", variants=("adult",), canonical="adult",
+            reason_types=("MANUAL_MANAGEMENT",),
+        )
+
+        service._require_valid_for_scope(
+            records, candidate, TaggingCategoryKey.STUFFED_ANIMALS
+        )
+        with self.assertRaises(NormalizationRuleValidationError):
+            service._require_valid_for_scope(
+                records, candidate, TaggingCategoryKey.PILLOW
+            )

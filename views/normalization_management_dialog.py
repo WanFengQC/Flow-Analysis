@@ -21,13 +21,14 @@ from models.normalization_active_rule import (
     NormalizationActiveRuleRecord,
 )
 from models.normalization_rule import NormalizationRuleType
+from models.tagging_label import TaggingCategoryKey, category_display_name
 from ui.ui_normalization_management_dialog import Ui_NormalizationManagementDialog
 
 
 class NormalizationActiveRuleTableModel(QAbstractTableModel):
     """当前有效规则的纯展示模型，不承担搜索、排序或数据库访问。"""
 
-    _HEADERS = ("类型", "变体词", "标准词", "来源", "版本", "更新时间")
+    _HEADERS = ("品类", "类型", "变体词", "标准词", "来源", "版本", "更新时间")
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -61,6 +62,7 @@ class NormalizationActiveRuleTableModel(QAbstractTableModel):
         if record is None:
             return None
         values = (
+            category_display_name(record.category_key) if record.category_key else "全局",
             record.rule_type.value,
             " / ".join(record.variants),
             record.canonical,
@@ -93,10 +95,15 @@ class NormalizationRuleEditorDialog(QDialog):
         self.type_combo.addItem("WORD", NormalizationRuleType.WORD.value)
         self.type_combo.addItem("PHRASE", NormalizationRuleType.PHRASE.value)
         self.variants_edit = QPlainTextEdit(self)
+        self.category_combo = QComboBox(self)
+        self.category_combo.addItem("全局", None)
+        for category in TaggingCategoryKey:
+            self.category_combo.addItem(category_display_name(category), category.value)
         self.variants_edit.setPlaceholderText("每行一个 variant；也支持用英文逗号分隔")
         self.variants_edit.setMinimumHeight(120)
         self.canonical_edit = QLineEdit(self)
         form.addRow("规则类型", self.type_combo)
+        form.addRow("所属品类", self.category_combo)
         form.addRow("变体词", self.variants_edit)
         form.addRow("标准词", self.canonical_edit)
         layout.addLayout(form)
@@ -113,8 +120,13 @@ class NormalizationRuleEditorDialog(QDialog):
             )
             self.variants_edit.setPlainText("\n".join(record.variants))
             self.canonical_edit.setText(record.canonical)
+            self.category_combo.setCurrentIndex(
+                self.category_combo.findData(
+                    record.category_key.value if record.category_key else None
+                )
+            )
 
-    def values(self) -> tuple[str, list[str], str]:
+    def values(self) -> tuple[str, list[str], str, str | None]:
         variants = [
             item.strip()
             for line in self.variants_edit.toPlainText().splitlines()
@@ -125,15 +137,16 @@ class NormalizationRuleEditorDialog(QDialog):
             str(self.type_combo.currentData()),
             variants,
             self.canonical_edit.text().strip(),
+            self.category_combo.currentData(),
         )
 
 
 class NormalizationManagementDialog(QDialog):
     """当前有效规则管理窗口，和当前分析的候选审核窗口完全隔离。"""
 
-    refresh_requested = Signal(str, object, int)
-    create_requested = Signal(str, object, str)
-    update_requested = Signal(object, int, str, object, str)
+    refresh_requested = Signal(str, object, object, int)
+    create_requested = Signal(str, object, str, object)
+    update_requested = Signal(object, int, str, object, str, object)
     revoke_requested = Signal(object, int)
     history_requested = Signal(object)
     PAGE_SIZE = 100
@@ -150,7 +163,10 @@ class NormalizationManagementDialog(QDialog):
         self._model = NormalizationActiveRuleTableModel(self)
         self.ui.rulesTableView.setModel(self._model)
         self.ui.rulesTableView.horizontalHeader().setStretchLastSection(True)
-        self.ui.rulesTableView.setColumnWidth(1, 300)
+        self.ui.rulesTableView.setColumnWidth(2, 300)
+        self.category_filter = QComboBox(self)
+        self.category_filter.setMinimumWidth(130)
+        self.ui.normalizationManagementFilterLayout.insertWidget(2, self.category_filter)
         self.ui.rulesTableView.selectionModel().currentChanged.connect(
             lambda *_: self._update_controls()
         )
@@ -158,6 +174,7 @@ class NormalizationManagementDialog(QDialog):
         self.ui.refreshButton.clicked.connect(self._refresh_first_page)
         self.ui.searchLineEdit.returnPressed.connect(self._refresh_first_page)
         self.ui.ruleTypeComboBox.currentIndexChanged.connect(self._refresh_first_page)
+        self.category_filter.currentIndexChanged.connect(self._refresh_first_page)
         self.ui.previousPageButton.clicked.connect(self._previous_page)
         self.ui.nextPageButton.clicked.connect(self._next_page)
         self.ui.addButton.clicked.connect(self._create_rule)
@@ -203,6 +220,9 @@ class NormalizationManagementDialog(QDialog):
         self.ui.ruleTypeComboBox.addItem("全部类型", None)
         self.ui.ruleTypeComboBox.addItem("WORD", NormalizationRuleType.WORD.value)
         self.ui.ruleTypeComboBox.addItem("PHRASE", NormalizationRuleType.PHRASE.value)
+        self.category_filter.addItem("全部品类", None)
+        for category in TaggingCategoryKey:
+            self.category_filter.addItem(category_display_name(category), category.value)
 
     def _refresh_first_page(self) -> None:
         self._page = 0
@@ -222,6 +242,7 @@ class NormalizationManagementDialog(QDialog):
         self.refresh_requested.emit(
             self.ui.searchLineEdit.text().strip(),
             self.ui.ruleTypeComboBox.currentData(),
+            self.category_filter.currentData(),
             self._page,
         )
 
@@ -233,8 +254,8 @@ class NormalizationManagementDialog(QDialog):
         editor = NormalizationRuleEditorDialog(self)
         if editor.exec() != QDialog.DialogCode.Accepted:
             return
-        rule_type, variants, canonical = editor.values()
-        self.create_requested.emit(rule_type, variants, canonical)
+        rule_type, variants, canonical, category_key = editor.values()
+        self.create_requested.emit(rule_type, variants, canonical, category_key)
 
     def _edit_rule(self) -> None:
         record = self._selected_record()
@@ -244,8 +265,8 @@ class NormalizationManagementDialog(QDialog):
         editor = NormalizationRuleEditorDialog(self, record)
         if editor.exec() != QDialog.DialogCode.Accepted:
             return
-        rule_type, variants, canonical = editor.values()
-        self.update_requested.emit(record.id, record.revision, rule_type, variants, canonical)
+        rule_type, variants, canonical, category_key = editor.values()
+        self.update_requested.emit(record.id, record.revision, rule_type, variants, canonical, category_key)
 
     def _revoke_rule(self) -> None:
         record = self._selected_record()

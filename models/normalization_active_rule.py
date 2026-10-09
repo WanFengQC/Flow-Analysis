@@ -6,6 +6,7 @@ from enum import StrEnum
 from uuid import UUID
 
 from models.normalization_rule import NormalizationRule, NormalizationRuleType
+from models.tagging_label import TaggingCategoryKey
 
 
 class NormalizationRuleAuditAction(StrEnum):
@@ -30,6 +31,8 @@ class NormalizationActiveRuleRecord:
     supersedes_rule_id: UUID | None
     revision: int
     is_active: bool
+    # None 表示既有全局规则；品类规则使用稳定内部 key。
+    category_key: TaggingCategoryKey | None = None
     revoked_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None

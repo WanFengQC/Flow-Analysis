@@ -262,9 +262,9 @@ class MainWindow(QMainWindow):
     tagging_review_close_requested = Signal()
     tagging_review_discard_requested = Signal()
     # 两个持久化管理窗口只转发明确用户操作；Controller 负责所有异步数据库调用。
-    normalization_management_refresh_requested = Signal(str, object, int)
-    normalization_management_create_requested = Signal(str, object, str)
-    normalization_management_update_requested = Signal(object, int, str, object, str)
+    normalization_management_refresh_requested = Signal(str, object, object, int)
+    normalization_management_create_requested = Signal(str, object, str, object)
+    normalization_management_update_requested = Signal(object, int, str, object, str, object)
     normalization_management_revoke_requested = Signal(object, int)
     normalization_management_history_requested = Signal(object)
     tagging_management_refresh_requested = Signal(object, object, object, str, int)

@@ -12,6 +12,7 @@ from models.normalization_active_rule import (
     NormalizationRuleAuditAction,
 )
 from models.normalization_rule import NormalizationRuleType
+from models.tagging_label import TaggingCategoryKey
 from repositories.base_repository import BaseRepository
 
 
@@ -31,6 +32,7 @@ class NormalizationActiveRuleRepository(BaseRepository):
         *,
         search: str | None = None,
         rule_type: NormalizationRuleType | None = None,
+        category_key: TaggingCategoryKey | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[list[NormalizationActiveRuleRecord], int]:
@@ -38,7 +40,7 @@ class NormalizationActiveRuleRepository(BaseRepository):
 
         if limit <= 0 or offset < 0:
             raise ValueError("分页参数无效")
-        where, parameters = self._active_where(search, rule_type)
+        where, parameters = self._active_where(search, rule_type, category_key)
         select_sql = f"""
             SELECT *
             FROM normalization_active_rules
@@ -90,6 +92,26 @@ class NormalizationActiveRuleRepository(BaseRepository):
             if isinstance(row, Mapping)
         ]
 
+    async def list_effective_active_rules(
+        self,
+        category_key: TaggingCategoryKey,
+    ) -> list[NormalizationActiveRuleRecord]:
+        """读取全局规则和指定品类规则，供一轮分析冻结为同一快照。"""
+
+        sql = """
+            SELECT *
+            FROM normalization_active_rules
+            WHERE is_active = TRUE
+              AND (category_key IS NULL OR category_key = %(category_key)s)
+            ORDER BY created_at ASC, id ASC
+            FOR UPDATE
+        """
+        async with self.connection_scope() as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(sql, {"category_key": category_key.value})
+                rows = await cursor.fetchall()
+        return [self._record_from_row(row) for row in rows if isinstance(row, Mapping)]
+
     async def get_active_rule(
         self,
         rule_id: UUID,
@@ -117,10 +139,10 @@ class NormalizationActiveRuleRepository(BaseRepository):
 
         sql = """
             INSERT INTO normalization_active_rules (
-                id, rule_type, variants, canonical, source_candidate_id,
+                id, rule_type, variants, canonical, category_key, source_candidate_id,
                 source_reason_types, supersedes_rule_id, revision, is_active, revoked_at
             ) VALUES (
-                %(id)s, %(rule_type)s, %(variants)s, %(canonical)s,
+                %(id)s, %(rule_type)s, %(variants)s, %(canonical)s, %(category_key)s,
                 %(source_candidate_id)s, %(source_reason_types)s,
                 %(supersedes_rule_id)s, %(revision)s, %(is_active)s, %(revoked_at)s
             )
@@ -249,6 +271,7 @@ class NormalizationActiveRuleRepository(BaseRepository):
     def _active_where(
         search: str | None,
         rule_type: NormalizationRuleType | None,
+        category_key: TaggingCategoryKey | None,
     ) -> tuple[str, dict[str, Any]]:
         clauses = ["is_active = TRUE"]
         parameters: dict[str, Any] = {}
@@ -258,6 +281,9 @@ class NormalizationActiveRuleRepository(BaseRepository):
         if rule_type is not None:
             clauses.append("rule_type = %(rule_type)s")
             parameters["rule_type"] = rule_type.value
+        if category_key is not None:
+            clauses.append("category_key = %(category_key)s")
+            parameters["category_key"] = category_key.value
         return "WHERE " + " AND ".join(clauses), parameters
 
     @staticmethod
@@ -267,6 +293,7 @@ class NormalizationActiveRuleRepository(BaseRepository):
             "rule_type": record.rule_type.value,
             "variants": Jsonb(list(record.variants)),
             "canonical": record.canonical,
+            "category_key": record.category_key.value if record.category_key else None,
             "source_candidate_id": record.source_candidate_id,
             "source_reason_types": Jsonb(list(record.source_reason_types)),
             "supersedes_rule_id": record.supersedes_rule_id,
@@ -292,6 +319,11 @@ class NormalizationActiveRuleRepository(BaseRepository):
                 if isinstance(value, str) and value.strip()
             ),
             canonical=str(row["canonical"]),
+            category_key=(
+                TaggingCategoryKey(str(row["category_key"]))
+                if row.get("category_key") is not None
+                else None
+            ),
             source_candidate_id=(
                 str(row["source_candidate_id"])
                 if row.get("source_candidate_id") is not None

@@ -42,9 +42,36 @@ class NormalizationActiveRuleRepository(BaseRepository):
             raise ValueError("分页参数无效")
         where, parameters = self._active_where(search, rule_type, category_key)
         select_sql = f"""
-            SELECT *
-            FROM normalization_active_rules
-            {where}
+            SELECT rule.*, COALESCE(provenance.source_asins, ARRAY[]::text[]) AS source_asins
+            FROM normalization_active_rules AS rule
+            LEFT JOIN LATERAL (
+                WITH RECURSIVE lineage AS (
+                    SELECT rule.id, rule.supersedes_rule_id
+
+                    UNION ALL
+
+                    SELECT parent.id, parent.supersedes_rule_id
+                    FROM normalization_active_rules AS parent
+                    INNER JOIN lineage AS child
+                        ON child.supersedes_rule_id = parent.id
+                ),
+                imported_scopes AS (
+                    SELECT ledger.source_scopes
+                    FROM normalization_legacy_rule_imports AS ledger
+                    INNER JOIN lineage
+                        ON lineage.id = ledger.active_rule_id
+                    WHERE ledger.import_status = 'IMPORTED'
+                )
+                SELECT array_agg(DISTINCT upper(match[1]) ORDER BY upper(match[1]))
+                    FILTER (WHERE match[1] IS NOT NULL) AS source_asins
+                FROM imported_scopes
+                CROSS JOIN LATERAL jsonb_array_elements(imported_scopes.source_scopes) AS scope_item
+                CROSS JOIN LATERAL regexp_matches(
+                    scope_item ->> 'scope',
+                    '(?i)(B0[A-Z0-9]{{8}})'
+                ) AS match
+            ) AS provenance ON TRUE
+            {where.replace('WHERE ', 'WHERE rule.', 1).replace(' AND ', ' AND rule.')}
             ORDER BY created_at DESC, id DESC
             LIMIT %(limit)s OFFSET %(offset)s
         """
@@ -332,6 +359,11 @@ class NormalizationActiveRuleRepository(BaseRepository):
             source_reason_types=tuple(
                 value.strip()
                 for value in reason_types
+                if isinstance(value, str) and value.strip()
+            ),
+            source_asins=tuple(
+                value.strip().upper()
+                for value in row.get("source_asins", [])
                 if isinstance(value, str) and value.strip()
             ),
             supersedes_rule_id=row.get("supersedes_rule_id"),

@@ -778,11 +778,13 @@ class MainController(QObject):
             failed=self.tagging_management_failed,
         )
 
-    @Slot(object, int, str, str)
+    @Slot(object, int, str, str, str, str)
     def _update_tagging_management_label(
         self,
         cache_id: object,
         revision: int,
+        category_key: str,
+        word: str,
         label: str,
         reason: str,
     ) -> None:
@@ -799,6 +801,8 @@ class MainController(QObject):
             service.update_manual_label(
                 cache_id=parsed_id,
                 expected_revision=revision,
+                category_key=category_key,
+                word=word,
                 label=label,
                 reason=reason,
             ),

@@ -269,7 +269,7 @@ class MainWindow(QMainWindow):
     normalization_management_history_requested = Signal(object)
     tagging_management_refresh_requested = Signal(object, object, object, str, int)
     tagging_management_create_requested = Signal(str, str, str, str)
-    tagging_management_update_requested = Signal(object, int, str, str)
+    tagging_management_update_requested = Signal(object, int, str, str, str, str)
     tagging_management_delete_requested = Signal(object, int)
     tagging_management_history_requested = Signal(object)
     _ALL_VARIATION_FILTER_VALUE = "全部"

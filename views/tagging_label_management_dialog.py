@@ -5,6 +5,7 @@ from typing import Any
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -86,7 +87,7 @@ class TaggingLabelTableModel(QAbstractTableModel):
 
 
 class TaggingLabelEditorDialog(QDialog):
-    """标签新增/编辑独立表单；编辑时稳定缓存 identity 默认为只读。"""
+    """标签新增/编辑独立表单；identity 改动由 Service 事务迁移。"""
 
     def __init__(
         self,
@@ -128,9 +129,6 @@ class TaggingLabelEditorDialog(QDialog):
             self.word_edit.setText(record.word)
             self.label_combo.setCurrentIndex(self.label_combo.findData(record.label.value))
             self.reason_edit.setPlainText(record.reason or "")
-            # 防止无意改变 category + word + taxonomy 的缓存 identity。
-            self.category_combo.setEnabled(False)
-            self.word_edit.setReadOnly(True)
 
     def values(self) -> tuple[str, str, str, str]:
         return (
@@ -146,7 +144,7 @@ class TaggingLabelManagementDialog(QDialog):
 
     refresh_requested = Signal(object, object, object, str, int)
     create_requested = Signal(str, str, str, str)
-    update_requested = Signal(object, int, str, str)
+    update_requested = Signal(object, int, str, str, str, str)
     delete_requested = Signal(object, int)
     history_requested = Signal(object)
     PAGE_SIZE = 100
@@ -162,6 +160,7 @@ class TaggingLabelManagementDialog(QDialog):
         self._total = 0
         self._model = TaggingLabelTableModel(self)
         self.ui.labelsTableView.setModel(self._model)
+        self._configure_row_selection()
         self.ui.labelsTableView.horizontalHeader().setStretchLastSection(True)
         self.ui.labelsTableView.setColumnWidth(3, 340)
         self._populate_filters()
@@ -180,6 +179,20 @@ class TaggingLabelManagementDialog(QDialog):
             lambda *_: self._update_controls()
         )
         self._update_controls()
+
+    def _configure_row_selection(self) -> None:
+        """统一整行浅色选中绘制，避免单元格焦点框割裂同一行。"""
+
+        table = self.ui.labelsTableView
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.setStyleSheet(
+            "QTableView { selection-background-color: #e2f1ef; "
+            "selection-color: #183538; gridline-color: #e8eeee; }"
+            "QTableView::item:selected { background: #e2f1ef; color: #183538; "
+            "border: 0px; outline: 0; }"
+            "QTableView::item:selected:active { background: #d8ebe8; }"
+        )
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -297,8 +310,10 @@ class TaggingLabelManagementDialog(QDialog):
             return
         editor = TaggingLabelEditorDialog(self, record)
         if editor.exec() == QDialog.DialogCode.Accepted:
-            _, _, label, reason = editor.values()
-            self.update_requested.emit(record.id, record.revision, label, reason)
+            category_key, word, label, reason = editor.values()
+            self.update_requested.emit(
+                record.id, record.revision, category_key, word, label, reason
+            )
 
     def _delete_label(self) -> None:
         record = self._selected_record()

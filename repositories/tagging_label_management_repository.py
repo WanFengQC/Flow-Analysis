@@ -299,6 +299,17 @@ class TaggingLabelManagementRepository(BaseRepository):
         """合并旧正式标签审计与新的管理审计，按时间供详情窗口只读展示。"""
 
         sql = """
+            WITH RECURSIVE related_cache_ids AS (
+                SELECT %(cache_id)s::uuid AS cache_id
+
+                UNION
+
+                SELECT audit.cache_id
+                FROM tagging_label_management_audits AS audit
+                INNER JOIN related_cache_ids AS related
+                    ON (audit.after_snapshot #>> '{identityChange,migratedFromCacheId}') = related.cache_id::text
+                    OR (audit.after_snapshot #>> '{identityChange,migratedToCacheId}') = related.cache_id::text
+            )
             SELECT
                 'LABEL_DECISION' AS event_type,
                 id,
@@ -312,7 +323,7 @@ class TaggingLabelManagementRepository(BaseRepository):
                 ) AS snapshot,
                 created_at
             FROM tagging_label_decisions
-            WHERE cache_id = %(cache_id)s
+            WHERE cache_id IN (SELECT cache_id FROM related_cache_ids)
             UNION ALL
             SELECT
                 'MANAGEMENT' AS event_type,
@@ -325,7 +336,7 @@ class TaggingLabelManagementRepository(BaseRepository):
                 ) AS snapshot,
                 created_at
             FROM tagging_label_management_audits
-            WHERE cache_id = %(cache_id)s
+            WHERE cache_id IN (SELECT cache_id FROM related_cache_ids)
             ORDER BY created_at DESC, id DESC
         """
         async with self.connection_scope() as connection:

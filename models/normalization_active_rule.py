@@ -33,6 +33,8 @@ class NormalizationActiveRuleRecord:
     is_active: bool
     # None 表示既有全局规则；品类规则使用稳定内部 key。
     category_key: TaggingCategoryKey | None = None
+    # 历史导入规则从迁移账本只读解析出的来源 ASIN；不参与规则 identity 或校验。
+    source_asins: tuple[str, ...] = ()
     revoked_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None

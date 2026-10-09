@@ -11,6 +11,19 @@ class NormalizationRuleType(StrEnum):
     PHRASE = "PHRASE"
 
 
+def normalization_rule_type_display_name(value: object) -> str:
+    """归一规则类型仅在界面展示时中文化，持久化值保持英文枚举。"""
+
+    labels = {
+        NormalizationRuleType.WORD: "单词",
+        NormalizationRuleType.PHRASE: "短语",
+    }
+    try:
+        return labels.get(NormalizationRuleType(str(value)), str(value))
+    except (TypeError, ValueError):
+        return str(value)
+
+
 @dataclass(frozen=True)
 class NormalizationRule:
     """一条可审计的人工批准归一规则，不含任何持久化或 UI 逻辑。"""

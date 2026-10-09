@@ -243,7 +243,12 @@ class NormalizationManagementService:
                     canonical=clean_canonical,
                     category_key=scoped_category,
                     source_candidate_id=previous.source_candidate_id,
-                    source_reason_types=(self._MANUAL_REASON_TYPE,),
+                    # 编辑不抹去历史导入来源；追加人工管理标识，展示层仍可从
+                    # 版本链回查迁移账本中的 ASIN。
+                    source_reason_types=tuple(dict.fromkeys((
+                        *previous.source_reason_types,
+                        self._MANUAL_REASON_TYPE,
+                    ))),
                     supersedes_rule_id=previous.id,
                     revision=1,
                     is_active=True,

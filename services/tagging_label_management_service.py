@@ -142,11 +142,15 @@ class TaggingLabelManagementService:
         *,
         cache_id: UUID,
         expected_revision: int,
+        category_key: str,
+        word: str,
         label: str,
         reason: str,
     ) -> TaggingLabelCacheRecord:
-        """编辑只变更 label/reason，identity 默认不可在管理页修改。"""
+        """编辑人工标签；identity 改动以新缓存身份事务迁移而非原地覆写。"""
 
+        target_category = require_category_key(category_key)
+        target_word = normalize_cache_word(word)
         parsed_label = TagLabel(label)
         clean_reason = self._require_reason(reason)
         async with self._transaction_scope() as connection:
@@ -154,22 +158,77 @@ class TaggingLabelManagementService:
             before = await repository.get_current_by_id(cache_id, for_update=True)
             if before is None or before.revision != expected_revision:
                 raise TaggingLabelVersionConflictError("标签已被更新，请刷新后重试")
-            current = await repository.update_manual(
-                cache_id=cache_id,
+            if (
+                before.category_key == target_category
+                and before.word == target_word
+            ):
+                current = await repository.update_manual(
+                    cache_id=cache_id,
+                    revision=expected_revision,
+                    label=parsed_label,
+                    reason=clean_reason,
+                )
+                if current is None:
+                    raise TaggingLabelVersionConflictError("标签已被更新，请刷新后重试")
+                await self._append_label_decision(repository, current)
+                await self._append_management_audit(
+                    repository,
+                    current,
+                    TaggingLabelManagementAction.UPDATE,
+                    before_snapshot=self._snapshot(before),
+                )
+                return current
+
+            target_before = await repository.get_by_identity(
+                category_key=target_category,
+                word=target_word,
+                taxonomy_version=before.taxonomy_version,
+                for_update=True,
+            )
+            if target_before is not None and target_before.is_active:
+                raise TaggingLabelIdentityExistsError(
+                    "目标品类和标准词已有有效标签，不能覆盖另一条标签"
+                )
+            if target_before is None:
+                target = await repository.insert_manual(
+                    TaggingLabelCacheRecord(
+                        id=uuid4(),
+                        category_key=target_category,
+                        word=target_word,
+                        taxonomy_version=before.taxonomy_version,
+                        label=parsed_label,
+                        reason=clean_reason,
+                        decision_source=TaggingDecisionSource.MANUAL_MANAGEMENT,
+                        representative_asin=None,
+                        product_context_source=None,
+                    )
+                )
+                target_action = TaggingLabelManagementAction.CREATE
+            else:
+                target = await repository.reactivate_manual(
+                    previous=target_before,
+                    label=parsed_label,
+                    reason=clean_reason,
+                )
+                if target is None:
+                    raise TaggingLabelVersionConflictError("目标标签已被更新，请刷新后重试")
+                target_action = TaggingLabelManagementAction.UPDATE
+            retired = await repository.deactivate_current(
+                cache_id=before.id,
                 revision=expected_revision,
-                label=parsed_label,
-                reason=clean_reason,
             )
-            if current is None:
+            if retired is None:
                 raise TaggingLabelVersionConflictError("标签已被更新，请刷新后重试")
-            await self._append_label_decision(repository, current)
-            await self._append_management_audit(
+            await self._append_label_decision(repository, target)
+            await self._append_identity_migration_audits(
                 repository,
-                current,
-                TaggingLabelManagementAction.UPDATE,
-                before_snapshot=self._snapshot(before),
+                previous=before,
+                retired=retired,
+                target_before=target_before,
+                target=target,
+                target_action=target_action,
             )
-            return current
+            return target
 
     async def delete_manual_label(
         self,
@@ -236,6 +295,47 @@ class TaggingLabelManagementService:
                 action=action,
                 before_snapshot=before_snapshot,
                 after_snapshot=self._snapshot(record),
+            )
+        )
+
+    async def _append_identity_migration_audits(
+        self,
+        repository: TaggingLabelManagementRepository,
+        *,
+        previous: TaggingLabelCacheRecord,
+        retired: TaggingLabelCacheRecord,
+        target_before: TaggingLabelCacheRecord | None,
+        target: TaggingLabelCacheRecord,
+        target_action: TaggingLabelManagementAction,
+    ) -> None:
+        """记录双向 identity 链接，使新旧缓存均能追溯人工迁移。"""
+
+        retired_snapshot = self._snapshot(retired)
+        retired_snapshot["identityChange"] = {
+            "migratedToCacheId": str(target.id),
+        }
+        target_snapshot = self._snapshot(target)
+        target_snapshot["identityChange"] = {
+            "migratedFromCacheId": str(previous.id),
+        }
+        await repository.append_management_audit(
+            TaggingLabelManagementAuditRecord(
+                id=uuid4(),
+                cache_id=retired.id,
+                action=TaggingLabelManagementAction.UPDATE,
+                before_snapshot=self._snapshot(previous),
+                after_snapshot=retired_snapshot,
+            )
+        )
+        await repository.append_management_audit(
+            TaggingLabelManagementAuditRecord(
+                id=uuid4(),
+                cache_id=target.id,
+                action=target_action,
+                before_snapshot=(
+                    self._snapshot(target_before) if target_before is not None else None
+                ),
+                after_snapshot=target_snapshot,
             )
         )
 

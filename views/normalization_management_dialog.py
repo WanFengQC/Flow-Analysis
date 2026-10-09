@@ -5,6 +5,7 @@ from typing import Any
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -20,7 +21,10 @@ from models.normalization_active_rule import (
     NormalizationActiveRuleAuditRecord,
     NormalizationActiveRuleRecord,
 )
-from models.normalization_rule import NormalizationRuleType
+from models.normalization_rule import (
+    NormalizationRuleType,
+    normalization_rule_type_display_name,
+)
 from models.tagging_label import TaggingCategoryKey, category_display_name
 from ui.ui_normalization_management_dialog import Ui_NormalizationManagementDialog
 
@@ -28,7 +32,7 @@ from ui.ui_normalization_management_dialog import Ui_NormalizationManagementDial
 class NormalizationActiveRuleTableModel(QAbstractTableModel):
     """当前有效规则的纯展示模型，不承担搜索、排序或数据库访问。"""
 
-    _HEADERS = ("品类", "类型", "变体词", "标准词", "来源", "版本", "更新时间")
+    _HEADERS = ("品类", "类型", "变体词", "标准词", "来源", "更新时间")
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -56,21 +60,35 @@ class NormalizationActiveRuleTableModel(QAbstractTableModel):
         return section + 1 if orientation == Qt.Orientation.Vertical else None
 
     def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
-        if not index.isValid() or role != Qt.ItemDataRole.DisplayRole:
+        if not index.isValid():
             return None
         record = self.record_at(index.row())
         if record is None:
             return None
+        if role == Qt.ItemDataRole.ToolTipRole and index.column() == 4:
+            return "\n".join(record.source_asins) if record.source_asins else None
+        if role != Qt.ItemDataRole.DisplayRole:
+            return None
         values = (
             category_display_name(record.category_key) if record.category_key else "全局",
-            record.rule_type.value,
+            normalization_rule_type_display_name(record.rule_type),
             " / ".join(record.variants),
             record.canonical,
-            record.source_candidate_id or "人工管理",
-            str(record.revision),
+            self._source_display(record),
             self._datetime_text(record.updated_at or record.created_at),
         )
         return values[index.column()] if index.column() < len(values) else None
+
+    @staticmethod
+    def _source_display(record: NormalizationActiveRuleRecord) -> str:
+        """历史规则只展示账本中可验证的 ASIN，不暴露内部迁移标识。"""
+
+        if record.source_asins:
+            first = record.source_asins[0]
+            return first if len(record.source_asins) == 1 else f"{first}（+{len(record.source_asins) - 1}）"
+        if "HISTORICAL_IMPORT" in record.source_reason_types:
+            return "历史导入"
+        return "人工管理"
 
     @staticmethod
     def _datetime_text(value: object) -> str:
@@ -92,8 +110,8 @@ class NormalizationRuleEditorDialog(QDialog):
         layout = QVBoxLayout(self)
         form = QFormLayout()
         self.type_combo = QComboBox(self)
-        self.type_combo.addItem("WORD", NormalizationRuleType.WORD.value)
-        self.type_combo.addItem("PHRASE", NormalizationRuleType.PHRASE.value)
+        self.type_combo.addItem("单词", NormalizationRuleType.WORD.value)
+        self.type_combo.addItem("短语", NormalizationRuleType.PHRASE.value)
         self.variants_edit = QPlainTextEdit(self)
         self.category_combo = QComboBox(self)
         self.category_combo.addItem("全局", None)
@@ -162,6 +180,7 @@ class NormalizationManagementDialog(QDialog):
         self._total = 0
         self._model = NormalizationActiveRuleTableModel(self)
         self.ui.rulesTableView.setModel(self._model)
+        self._configure_row_selection()
         self.ui.rulesTableView.horizontalHeader().setStretchLastSection(True)
         self.ui.rulesTableView.setColumnWidth(2, 300)
         self.category_filter = QComboBox(self)
@@ -182,6 +201,20 @@ class NormalizationManagementDialog(QDialog):
         self.ui.revokeButton.clicked.connect(self._revoke_rule)
         self.ui.historyButton.clicked.connect(self._request_history)
         self._update_controls()
+
+    def _configure_row_selection(self) -> None:
+        """统一整行浅色选中绘制，键盘上下选择仍由 QTableView 原生处理。"""
+
+        table = self.ui.rulesTableView
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.setStyleSheet(
+            "QTableView { selection-background-color: #e2f1ef; "
+            "selection-color: #183538; gridline-color: #e8eeee; }"
+            "QTableView::item:selected { background: #e2f1ef; color: #183538; "
+            "border: 0px; outline: 0; }"
+            "QTableView::item:selected:active { background: #d8ebe8; }"
+        )
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -218,8 +251,8 @@ class NormalizationManagementDialog(QDialog):
 
     def _populate_filters(self) -> None:
         self.ui.ruleTypeComboBox.addItem("全部类型", None)
-        self.ui.ruleTypeComboBox.addItem("WORD", NormalizationRuleType.WORD.value)
-        self.ui.ruleTypeComboBox.addItem("PHRASE", NormalizationRuleType.PHRASE.value)
+        self.ui.ruleTypeComboBox.addItem("单词", NormalizationRuleType.WORD.value)
+        self.ui.ruleTypeComboBox.addItem("短语", NormalizationRuleType.PHRASE.value)
         self.category_filter.addItem("全部品类", None)
         for category in TaggingCategoryKey:
             self.category_filter.addItem(category_display_name(category), category.value)
